@@ -1,0 +1,12 @@
+[package]
+name = "speedrun-splits"
+version = "0.1.0"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+inputbot = { git = "https://github.com/obv-mikhail/InputBot", branch = "develop" }
+livesplit-core = "0.12.0"
+lazy_static = "1.4.0"
+eframe = "0.18.0"
