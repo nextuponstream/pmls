@@ -1,4 +1,5 @@
 use eframe::egui;
+use eframe::App;
 use inputbot::KeybdKey::Numpad1Key;
 use inputbot::KeybdKey::Numpad3Key;
 use lazy_static::lazy_static;
@@ -20,7 +21,6 @@ impl MyApp {
 
 impl eframe::App for MyApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        println!("update");
         let splits = self.splits.lock().unwrap();
         egui::CentralPanel::default().show(ctx, |ui| {
             ui.heading(self.name.clone());
@@ -45,6 +45,9 @@ impl eframe::App for MyApp {
                 ui.label(format!("{}", splits[4]));
             });
         });
+
+        // continously repaint even if out of focus
+        ctx.request_repaint();
     }
 }
 
@@ -127,5 +130,6 @@ fn main() {
     // also blocking
     let options = eframe::NativeOptions::default();
     let app = MyApp::new("Poor man's LiveSplit".to_owned(), splits);
+
     eframe::run_native("My egui App", options, Box::new(|_cc| Box::new(app)));
 }
