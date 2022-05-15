@@ -10,18 +10,43 @@ use std::thread;
 
 struct MyApp {
     name: String,
+    timer: &'static Mutex<Timer>,
     splits: &'static Mutex<[String; 5]>,
 }
 
 impl MyApp {
-    pub fn new(name: String, splits: &'static Mutex<[String; 5]>) -> Self {
-        Self { name, splits }
+    pub fn new(
+        name: String,
+        timer: &'static Mutex<Timer>,
+        splits: &'static Mutex<[String; 5]>,
+    ) -> Self {
+        Self {
+            name,
+            timer,
+            splits,
+        }
     }
 }
 
 impl eframe::App for MyApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         let splits = self.splits.lock().unwrap();
+        let timer = self.timer.lock().unwrap();
+        let current_time = {
+            let d = timer
+                .snapshot()
+                .current_time()
+                .real_time
+                .unwrap()
+                .to_duration();
+            format!(
+                "{}h{}m{}.{}",
+                d.whole_hours(),
+                d.whole_minutes(),
+                d.whole_seconds(),
+                d.whole_milliseconds()
+            )
+        };
         egui::CentralPanel::default().show(ctx, |ui| {
             ui.heading(self.name.clone());
             ui.horizontal(|ui| {
@@ -43,6 +68,10 @@ impl eframe::App for MyApp {
             ui.horizontal(|ui| {
                 ui.label("Hades: ");
                 ui.label(format!("{}", splits[4]));
+            });
+            ui.horizontal(|ui| {
+                ui.label("Time: ");
+                ui.label(format!("{:?}", current_time));
             });
         });
 
@@ -129,7 +158,7 @@ fn main() {
 
     // also blocking
     let options = eframe::NativeOptions::default();
-    let app = MyApp::new("Poor man's LiveSplit".to_owned(), splits);
+    let app = MyApp::new("Poor man's LiveSplit".to_owned(), &TIMER, splits);
 
     eframe::run_native("My egui App", options, Box::new(|_cc| Box::new(app)));
 }
