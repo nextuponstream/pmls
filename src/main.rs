@@ -1,23 +1,21 @@
 use eframe::egui;
-use eframe::App;
 use inputbot::KeybdKey::Numpad1Key;
 use inputbot::KeybdKey::Numpad3Key;
-use lazy_static::lazy_static;
 use livesplit_core::TimerPhase::*;
 use livesplit_core::{Run, Segment, Timer};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex, RwLock};
 use std::thread;
 
 struct MyApp {
     name: String,
-    timer: &'static Mutex<Timer>,
+    timer: Arc<RwLock<Timer>>,
     splits: &'static Mutex<[String; 5]>,
 }
 
 impl MyApp {
     pub fn new(
         name: String,
-        timer: &'static Mutex<Timer>,
+        timer: Arc<RwLock<Timer>>,
         splits: &'static Mutex<[String; 5]>,
     ) -> Self {
         Self {
@@ -31,9 +29,11 @@ impl MyApp {
 impl eframe::App for MyApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         let splits = self.splits.lock().unwrap();
-        let timer = self.timer.lock().unwrap();
         let current_time = {
-            let d = timer
+            let d = self
+                .timer
+                .read()
+                .unwrap()
                 .snapshot()
                 .current_time()
                 .real_time
@@ -51,27 +51,27 @@ impl eframe::App for MyApp {
             ui.heading(self.name.clone());
             ui.horizontal(|ui| {
                 ui.label("Tartarus: ");
-                ui.label(format!("{}", splits[0]));
+                ui.label(splits[0].to_string());
             });
             ui.horizontal(|ui| {
                 ui.label("Asphodel: ");
-                ui.label(format!("{}", splits[1]));
+                ui.label(splits[1].to_string());
             });
             ui.horizontal(|ui| {
                 ui.label("Elysium: ");
-                ui.label(format!("{}", splits[2]));
+                ui.label(splits[2].to_string());
             });
             ui.horizontal(|ui| {
                 ui.label("Styx: ");
-                ui.label(format!("{}", splits[3]));
+                ui.label(splits[3].to_string());
             });
             ui.horizontal(|ui| {
                 ui.label("Hades: ");
-                ui.label(format!("{}", splits[4]));
+                ui.label(splits[4].to_string());
             });
             ui.horizontal(|ui| {
                 ui.label("Time: ");
-                ui.label(format!("{:?}", current_time));
+                ui.label(current_time);
             });
         });
 
@@ -81,16 +81,16 @@ impl eframe::App for MyApp {
 }
 
 /// Starts the timer with the relevant keybinding and prints a message
-fn start_or_split_timer(timer: &Mutex<Timer>, splits: &Mutex<[String; 5]>) {
+fn start_or_split_timer(timer: Arc<RwLock<Timer>>, splits: &Mutex<[String; 5]>) {
     let mut splits = splits.lock().unwrap();
-    let mut timer = timer.lock().unwrap();
-    let message = match timer.current_phase() {
+    let message = match timer.read().unwrap().current_phase() {
         // FIXME wrong start message
         Running | Ended => "Start!",
         _ => "Split!",
     };
     println!("{}", message);
-    timer.split_or_start();
+    timer.write().unwrap().split_or_start();
+    let timer = timer.read().unwrap();
     let snapshot = timer.snapshot();
     let segments = snapshot.run().segments();
     for i in 0..5 {
@@ -109,9 +109,8 @@ fn start_or_split_timer(timer: &Mutex<Timer>, splits: &Mutex<[String; 5]>) {
 }
 
 /// Prints current timer and split
-fn print_timer(timer: &Mutex<Timer>) {
-    let timer = timer.lock().unwrap();
-
+fn print_timer(timer: Arc<RwLock<Timer>>) {
+    let timer = timer.read().unwrap();
     let d = timer
         .snapshot()
         .current_time()
@@ -129,36 +128,32 @@ fn print_timer(timer: &Mutex<Timer>) {
     );
 }
 
-lazy_static! {
-    static ref TIMER: Mutex<Timer> = {
-        let mut run = Run::new();
-        run.set_game_name("Hades");
-        run.set_category_name("Clean file");
-        run.push_segment(Segment::new("Tartarus"));
-        run.push_segment(Segment::new("Asphodel"));
-        run.push_segment(Segment::new("Elysium"));
-        run.push_segment(Segment::new("Styx"));
-        run.push_segment(Segment::new("Hades"));
-        let t = Mutex::new(Timer::new(run).expect(""));
-
-        t
-    };
-}
-
 fn main() {
     let splits: &'static Mutex<[String; 5]> = Box::leak(Box::new(Default::default()));
-    // can't borrow if timer is not in lazy static or some Boxed things found on Stackoverflow
-    Numpad1Key.bind(|| start_or_split_timer(&TIMER, splits));
-    Numpad3Key.bind(|| print_timer(&TIMER));
+
+    let mut run = Run::new();
+    run.set_game_name("Hades");
+    run.set_category_name("Clean file");
+    run.push_segment(Segment::new("Tartarus"));
+    run.push_segment(Segment::new("Asphodel"));
+    run.push_segment(Segment::new("Elysium"));
+    run.push_segment(Segment::new("Styx"));
+    run.push_segment(Segment::new("Hades"));
+    // NOTE RwLock is threadsafe but read only
+    let t = Arc::new(RwLock::new(Timer::new(run).expect("")));
+    let t1 = t.clone();
+    let t2 = t.clone();
+    Numpad1Key.bind(move || start_or_split_timer(t1.clone(), splits));
+    Numpad3Key.bind(move || print_timer(t2.clone()));
 
     // blocking statement can be handled by spawning it's own thread
     thread::spawn(move || {
         inputbot::handle_input_events();
     });
-
+    // TODO investigate udev for keyboard???
     // also blocking
     let options = eframe::NativeOptions::default();
-    let app = MyApp::new("Poor man's LiveSplit".to_owned(), &TIMER, splits);
+    let app = MyApp::new("Poor man's LiveSplit".to_owned(), t, splits);
 
     eframe::run_native("My egui App", options, Box::new(|_cc| Box::new(app)));
 }

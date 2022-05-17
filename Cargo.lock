@@ -1703,7 +1703,6 @@ version = "0.1.0"
 dependencies = [
  "eframe",
  "inputbot",
- "lazy_static",
  "livesplit-core",
 ]
 
