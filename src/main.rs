@@ -3,21 +3,17 @@ use inputbot::KeybdKey::Numpad1Key;
 use inputbot::KeybdKey::Numpad3Key;
 use livesplit_core::TimerPhase::*;
 use livesplit_core::{Run, Segment, Timer};
-use std::sync::{Arc, Mutex, RwLock};
+use std::sync::{Arc, RwLock};
 use std::thread;
 
 struct MyApp {
     name: String,
     timer: Arc<RwLock<Timer>>,
-    splits: &'static Mutex<[String; 5]>,
+    splits: Arc<RwLock<[String; 5]>>,
 }
 
 impl MyApp {
-    pub fn new(
-        name: String,
-        timer: Arc<RwLock<Timer>>,
-        splits: &'static Mutex<[String; 5]>,
-    ) -> Self {
+    pub fn new(name: String, timer: Arc<RwLock<Timer>>, splits: Arc<RwLock<[String; 5]>>) -> Self {
         Self {
             name,
             timer,
@@ -28,7 +24,8 @@ impl MyApp {
 
 impl eframe::App for MyApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        let splits = self.splits.lock().unwrap();
+        let splits = self.splits.read().unwrap();
+        println!("{splits:?}");
         let current_time = {
             let d = self
                 .timer
@@ -81,8 +78,8 @@ impl eframe::App for MyApp {
 }
 
 /// Starts the timer with the relevant keybinding and prints a message
-fn start_or_split_timer(timer: Arc<RwLock<Timer>>, splits: &Mutex<[String; 5]>) {
-    let mut splits = splits.lock().unwrap();
+fn start_or_split_timer(timer: Arc<RwLock<Timer>>, splits: Arc<RwLock<[String; 5]>>) {
+    let mut splits = splits.write().unwrap();
     let message = match timer.read().unwrap().current_phase() {
         // FIXME wrong start message
         Running | Ended => "Start!",
@@ -105,7 +102,7 @@ fn start_or_split_timer(timer: Arc<RwLock<Timer>>, splits: &Mutex<[String; 5]>) 
             );
         };
     }
-    println!("{:?}", segments);
+    println!("split: {splits:?}");
 }
 
 /// Prints current timer and split
@@ -129,7 +126,8 @@ fn print_timer(timer: Arc<RwLock<Timer>>) {
 }
 
 fn main() {
-    let splits: &'static Mutex<[String; 5]> = Box::leak(Box::new(Default::default()));
+    let splits: Arc<RwLock<[String; 5]>> = Default::default();
+    let splits_ref1: Arc<RwLock<[String; 5]>> = splits.clone();
 
     let mut run = Run::new();
     run.set_game_name("Hades");
@@ -139,21 +137,28 @@ fn main() {
     run.push_segment(Segment::new("Elysium"));
     run.push_segment(Segment::new("Styx"));
     run.push_segment(Segment::new("Hades"));
-    // NOTE RwLock is threadsafe but read only
+
+    // Arc allows any thread to point to some variable but it does not allow to
+    // mutate it. This is why is wrapping a RwLock
     let t = Arc::new(RwLock::new(Timer::new(run).expect("")));
     let t1 = t.clone();
     let t2 = t.clone();
-    Numpad1Key.bind(move || start_or_split_timer(t1.clone(), splits));
+    Numpad1Key.bind(move || start_or_split_timer(t1.clone(), splits_ref1.clone()));
     Numpad3Key.bind(move || print_timer(t2.clone()));
 
     // blocking statement can be handled by spawning it's own thread
     thread::spawn(move || {
+        // TODO investigate udev for keyboard???
         inputbot::handle_input_events();
     });
-    // TODO investigate udev for keyboard???
-    // also blocking
+
     let options = eframe::NativeOptions::default();
     let app = MyApp::new("Poor man's LiveSplit".to_owned(), t, splits);
 
-    eframe::run_native("My egui App", options, Box::new(|_cc| Box::new(app)));
+    // also blocking
+    eframe::run_native(
+        app.name.clone().as_str(),
+        options,
+        Box::new(|_cc| Box::new(app)),
+    );
 }
