@@ -1,5 +1,5 @@
 [package]
-name = "speedrun-splits"
+name = "speedrun_splits"
 version = "0.1.0"
 edition = "2021"
 
