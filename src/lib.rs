@@ -2,6 +2,7 @@ use eframe::egui;
 use livesplit_core::TimeSpan;
 use livesplit_core::Timer;
 use livesplit_core::TimerPhase::*;
+use log::info;
 use std::sync::{Arc, RwLock};
 
 pub struct Speedrun {
@@ -140,7 +141,7 @@ pub fn start_or_split_timer(timer: Arc<RwLock<Timer>>, splits: Arc<RwLock<Splits
         _ => "",
     };
     if !message.is_empty() {
-        println!("{message}");
+        info!("{message}");
     }
     let mut splits = splits.write().unwrap();
     timer.write().unwrap().split_or_start();
@@ -159,7 +160,7 @@ pub fn start_or_split_timer(timer: Arc<RwLock<Timer>>, splits: Arc<RwLock<Splits
             Ended => "Ended!",
             _ => "Split!",
         };
-        println!("{message}");
+        info!("{message}");
     }
 }
 
@@ -172,4 +173,5 @@ pub fn reset(timer: Arc<RwLock<Timer>>, splits: Arc<RwLock<Splits>>) {
 
     let mut timer = timer.write().unwrap();
     timer.reset(true);
+    info!("Reset!");
 }
