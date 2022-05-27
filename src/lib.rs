@@ -52,8 +52,11 @@ impl eframe::App for Speedrun {
         let padding = splits.name_padding;
         let timer = self.timer.read().unwrap();
         let game_name = timer.run().game_name();
+        let category_name = timer.run().category_name();
+        let attempts = timer.run().attempt_count();
         egui::CentralPanel::default().show(ctx, |ui| {
             ui.heading(game_name);
+            ui.monospace(format!("Category: {}", category_name));
             for i in 0..splits.len() {
                 ui.horizontal(|ui| {
                     ui.monospace(format!("{:<padding$}:", splits.get_split_name(i)));
@@ -64,6 +67,7 @@ impl eframe::App for Speedrun {
                 ui.monospace(format!("{:<padding$}:", "Time"));
                 ui.monospace(current_time);
             });
+            ui.monospace(format!("Attempts: {attempts}"));
         });
 
         // continously repaint even if out of focus
@@ -129,14 +133,16 @@ pub fn format_timespan(timespan: TimeSpan) -> String {
     )
 }
 
-/// Starts the timer with the relevant keybinding and prints a message ("Start!" or "Split!")
+/// Starts the timer with the relevant keybinding and prints a message ("Running!" or "Split!")
 pub fn start_or_split_timer(timer: Arc<RwLock<Timer>>, splits: Arc<RwLock<Splits>>) {
-    let mut splits = splits.write().unwrap();
     let message = match timer.read().unwrap().current_phase() {
         NotRunning => "Start!",
-        _ => "Split!",
+        _ => "",
     };
-    println!("{message}");
+    if !message.is_empty() {
+        println!("{message}");
+    }
+    let mut splits = splits.write().unwrap();
     timer.write().unwrap().split_or_start();
     let timer = timer.read().unwrap();
     let snapshot = timer.snapshot();
@@ -146,4 +152,24 @@ pub fn start_or_split_timer(timer: Arc<RwLock<Timer>>, splits: Arc<RwLock<Splits
             splits.update_timespan(i, timespan);
         };
     }
+
+    // if timer was started, don't check for splits or speedrun end
+    if message.is_empty() {
+        let message = match timer.current_phase() {
+            Ended => "Ended!",
+            _ => "Split!",
+        };
+        println!("{message}");
+    }
+}
+
+/// Reset the timer (which adds one attempt) and clear splits time
+pub fn reset(timer: Arc<RwLock<Timer>>, splits: Arc<RwLock<Splits>>) {
+    let mut splits = splits.write().unwrap();
+    for i in 0..splits.len() {
+        splits.update_timespan(i, TimeSpan::zero());
+    }
+
+    let mut timer = timer.write().unwrap();
+    timer.reset(true);
 }

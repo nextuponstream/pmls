@@ -1,6 +1,6 @@
-use inputbot::KeybdKey::Numpad1Key;
+use inputbot::KeybdKey::{Numpad1Key, Numpad3Key};
 use livesplit_core::{Run, Segment, Timer};
-use speedrun_splits::{start_or_split_timer, Speedrun, Splits};
+use speedrun_splits::{reset, start_or_split_timer, Speedrun, Splits};
 use std::sync::{Arc, RwLock};
 use std::thread;
 
@@ -14,6 +14,7 @@ fn main() {
     ];
     let splits: Arc<RwLock<Splits>> = Arc::new(RwLock::new(Splits::new(split_names.clone())));
     let splits_ref1: Arc<RwLock<Splits>> = splits.clone();
+    let splits_ref2: Arc<RwLock<Splits>> = splits.clone();
 
     let mut run = Run::new();
     run.set_game_name("Hades");
@@ -26,9 +27,11 @@ fn main() {
     // mutate it. This is why is wrapping a RwLock
     let t = Arc::new(RwLock::new(Timer::new(run).expect("")));
     let t1 = t.clone();
+    let t2 = t.clone();
     Numpad1Key.bind(move || start_or_split_timer(t1.clone(), splits_ref1.clone()));
+    Numpad3Key.bind(move || reset(t2.clone(), splits_ref2.clone()));
 
-    // blocking statement can be handled by spawning it's own thread
+    // blocking statement can be handled by spawning its own thread
     thread::spawn(move || {
         // TODO investigate udev for keyboard???
         inputbot::handle_input_events();
