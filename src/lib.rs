@@ -2,8 +2,24 @@ use eframe::egui;
 use livesplit_core::TimeSpan;
 use livesplit_core::Timer;
 use livesplit_core::TimerPhase::*;
-use log::info;
+use log::{error, info, warn};
+use std::fmt;
 use std::sync::{Arc, RwLock};
+
+enum Error {
+    UI(String),
+    Timer(String),
+}
+
+impl fmt::Display for Error {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let msg: String = match self {
+            Error::UI(msg) => format!("Something went wrong while refreshing the window: {msg}"),
+            Error::Timer(msg) => format!("Something went wrong with the timer: {msg}"),
+        };
+        write!(f, "{msg}")
+    }
+}
 
 pub struct Speedrun {
     name: String,
@@ -40,24 +56,44 @@ pub struct Splits {
 
 impl eframe::App for Speedrun {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        let splits = self.splits.read().unwrap();
-        let timespan = self
+        let splits = match self
+            .splits
+            .read()
+            .map_err(|e| Error::UI(format!("splits mutex error: {e}")))
+        {
+            Ok(m) => m,
+            Err(e) => {
+                error!("{e}");
+                panic!("{e}")
+            }
+        };
+        let timer_readonly = match self
             .timer
             .read()
-            .unwrap()
-            .snapshot()
-            .current_time()
-            .real_time
-            .unwrap();
+            .map_err(|e| Error::UI(format!("timer mutex error: {e}")))
+        {
+            Ok(m) => m,
+            Err(e) => {
+                error!("{e}");
+                panic!("{e}")
+            }
+        };
+        let timespan = match timer_readonly.snapshot().current_time().real_time {
+            Some(ts) => ts,
+            None => {
+                warn!("Current time could not be parsed");
+                TimeSpan::default()
+            }
+        };
         let current_time = format_timespan(timespan);
         let padding = splits.name_padding;
-        let timer = self.timer.read().unwrap();
-        let game_name = timer.run().game_name();
-        let category_name = timer.run().category_name();
-        let attempts = timer.run().attempt_count();
+        let run = timer_readonly.run();
+        let category_name = run.category_name();
+        let attempts = run.attempt_count();
         egui::CentralPanel::default().show(ctx, |ui| {
-            ui.heading(game_name);
+            ui.heading(run.game_name());
             ui.monospace(format!("Category: {}", category_name));
+            ui.monospace(format!("Attempts: {attempts}"));
             for i in 0..splits.len() {
                 ui.horizontal(|ui| {
                     ui.monospace(format!("{:<padding$}:", splits.get_split_name(i)));
@@ -68,7 +104,9 @@ impl eframe::App for Speedrun {
                 ui.monospace(format!("{:<padding$}:", "Time"));
                 ui.monospace(current_time);
             });
-            ui.monospace(format!("Attempts: {attempts}"));
+            ui.monospace("");
+            ui.monospace("Start/split: Numpad 1");
+            ui.monospace("Reset      : Numpad 3");
         });
 
         // continously repaint even if out of focus
@@ -89,7 +127,11 @@ impl Splits {
         Splits {
             splits,
             // padding for names of splits (= longest name)
-            name_padding: split_names.into_iter().map(|n| n.len()).max().unwrap_or(0),
+            name_padding: split_names
+                .into_iter()
+                .map(|name| name.len())
+                .max()
+                .unwrap_or(0),
         }
     }
 
@@ -134,44 +176,101 @@ pub fn format_timespan(timespan: TimeSpan) -> String {
     )
 }
 
-/// Starts the timer with the relevant keybinding and prints a message ("Running!" or "Split!")
+/// Starts the timer with the relevant keybinding and logs key press
 pub fn start_or_split_timer(timer: Arc<RwLock<Timer>>, splits: Arc<RwLock<Splits>>) {
-    let message = match timer.read().unwrap().current_phase() {
-        NotRunning => "Start!",
-        _ => "",
+    let message = match timer.read().map_err(|e| {
+        Error::Timer(format!(
+            "Error with timer mutex while displaying timer start message: {e}"
+        ))
+    }) {
+        Ok(timer) => match timer.current_phase() {
+            NotRunning => "Start/split keypress: start",
+            _ => "",
+        },
+        Err(e) => {
+            error!("{e}");
+            panic!("{e}")
+        }
     };
     if !message.is_empty() {
         info!("{message}");
     }
-    let mut splits = splits.write().unwrap();
-    timer.write().unwrap().split_or_start();
-    let timer = timer.read().unwrap();
-    let snapshot = timer.snapshot();
-    let segments = snapshot.run().segments();
-    for (i, segment) in segments.iter().enumerate() {
-        if let Some(timespan) = segment.split_time().real_time {
-            splits.update_timespan(i, timespan);
-        };
+    match timer
+        .write()
+        .map_err(|e| Error::Timer(format!("Error with timer mutex while splitting: {e}")))
+    {
+        Ok(mut timer) => timer.split_or_start(),
+        Err(e) => {
+            error!("{e}");
+            panic!("{e}")
+        }
     }
+    match timer.read().map_err(|e| {
+        Error::Timer(format!(
+            "Error while capturing snapshot of run with timer mutex: {e}"
+        ))
+    }) {
+        Ok(timer) => {
+            let snapshot = timer.snapshot();
+            let segments = snapshot.run().segments();
+            for (i, segment) in segments.iter().enumerate() {
+                if let Some(timespan) = segment.split_time().real_time {
+                    let mut splits_write = match splits
+                        .write()
+                        .map_err(|e| Error::Timer(format!("splits mutex error: {e}")))
+                    {
+                        Ok(m) => m,
+                        Err(e) => {
+                            error!("{e}");
+                            panic!("{e}")
+                        }
+                    };
+                    splits_write.update_timespan(i, timespan);
+                };
+            }
 
-    // if timer was started, don't check for splits or speedrun end
-    if message.is_empty() {
-        let message = match timer.current_phase() {
-            Ended => "Ended!",
-            _ => "Split!",
-        };
-        info!("{message}");
-    }
+            // if timer was started, don't check for splits or speedrun end
+            if message.is_empty() {
+                let message = match timer.current_phase() {
+                    Ended => "Ended!",
+                    _ => "Start/split keypress: split",
+                };
+                info!("{message}");
+            }
+        }
+        Err(e) => {
+            error!("{e}");
+            panic!("{e}")
+        }
+    };
 }
 
 /// Reset the timer (which adds one attempt) and clear splits time
 pub fn reset(timer: Arc<RwLock<Timer>>, splits: Arc<RwLock<Splits>>) {
-    let mut splits = splits.write().unwrap();
+    info!("Reset keypress");
+    let mut splits = match splits
+        .write()
+        .map_err(|e| Error::Timer(format!("splits mutex error: {e}")))
+    {
+        Ok(m) => m,
+        Err(e) => {
+            error!("{e}");
+            panic!("{e}")
+        }
+    };
     for i in 0..splits.len() {
         splits.update_timespan(i, TimeSpan::zero());
     }
 
-    let mut timer = timer.write().unwrap();
+    let mut timer = match timer
+        .write()
+        .map_err(|e| Error::Timer(format!("timer mutex error: {e}")))
+    {
+        Ok(m) => m,
+        Err(e) => {
+            error!("{e}");
+            panic!("{e}")
+        }
+    };
     timer.reset(true);
-    info!("Reset!");
 }
