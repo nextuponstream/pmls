@@ -37,6 +37,8 @@ fn main() {
     let options = eframe::NativeOptions::default();
     let app = Speedrun::new("Poor man's LiveSplit".to_owned(), t, splits);
 
+    // TODO save state of speedrun
+
     // also blocking
     eframe::run_native(
         app.get_name().as_str(),

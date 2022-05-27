@@ -50,8 +50,10 @@ impl eframe::App for Speedrun {
             .unwrap();
         let current_time = format_timespan(timespan);
         let padding = splits.name_padding;
+        let timer = self.timer.read().unwrap();
+        let game_name = timer.run().game_name();
         egui::CentralPanel::default().show(ctx, |ui| {
-            ui.heading(self.name.clone());
+            ui.heading(game_name);
             for i in 0..splits.len() {
                 ui.horizontal(|ui| {
                     ui.monospace(format!("{:<padding$}:", splits.get_split_name(i)));
@@ -118,11 +120,12 @@ impl Split {
 pub fn format_timespan(timespan: TimeSpan) -> String {
     let d = timespan.to_duration();
     format!(
-        "{:02}:{:02}:{:02}.{:04}",
-        d.whole_hours(),
-        d.whole_minutes(),
-        d.whole_seconds(),
-        d.whole_milliseconds()
+        "{:02}:{:02}:{:02}.{:03}",
+        // TODO optionnal day/week formatting
+        d.whole_hours().rem_euclid(24),
+        d.whole_minutes().rem_euclid(60),
+        d.whole_seconds().rem_euclid(60),
+        d.whole_milliseconds().rem_euclid(1000)
     )
 }
 
