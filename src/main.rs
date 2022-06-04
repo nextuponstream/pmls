@@ -1,36 +1,193 @@
+use clap::{crate_authors, crate_name, crate_version, Arg, Command};
 use inputbot::KeybdKey::{Numpad1Key, Numpad3Key};
 use livesplit_core::{Run, Segment, Timer};
 use log::*;
-use simplelog::{ColorChoice, Config, TermLogger, TerminalMode};
-use speedrun_splits::{reset, start_or_split_timer, Speedrun, Splits};
+use simplelog::{Config, WriteLogger};
+use speedrun_splits::persistence::{
+    default_log_file_path, load_speedrun_settings, parse_config, parse_run_from_file,
+    save_run_to_file, save_speedrun_settings_to_file, update_config_with_default_speedrun,
+};
+use speedrun_splits::{parse_key, reset, start_or_split_timer, Speedrun, Splits};
+use std::fs;
+use std::process::ExitCode;
 use std::sync::{Arc, RwLock};
 use std::thread;
 
-fn main() {
-    let _ = TermLogger::init(
-        LevelFilter::Trace,
-        Config::default(),
-        TerminalMode::Mixed,
-        ColorChoice::Auto,
-    );
-    info!("speedrun_splits start");
+fn main() -> ExitCode {
+    let cmd = Command::new(crate_name!())
+        .author(crate_authors!())
+        .version(crate_version!())
+        .about("Splitlive for linux")
+        .arg(
+            Arg::new("game")
+                .requires("category")
+                .short('g')
+                .long("game")
+                .help("The game name when loading speedrun (\"{game}_{category}\" is the file name searched in data folder)")
+                .takes_value(true)
+                .value_name("GAME"),
+        )
+        .arg(
+            Arg::new("category")
+                .requires("game")
+                .short('c')
+                .long("category")
+                .help("The game category name when loading speedrun (\"{game}_{category}\" is the file name searched in data folder)")
+                .takes_value(true)
+                .value_name("CATEGORY"),
+        )
+        .arg(
+            Arg::new("split-names")
+                .short('n')
+                .long("split-names")
+                .help("The split names when creating a speedrun")
+                .takes_value(true)
+                .value_name("CATEGORY"),
+        )
+        .arg(
+            Arg::new("split-key")
+                .short('s')
+                .long("split-key")
+                .help("Assign split key (possible values: https://github.com/obv-mikhail/InputBot/blob/develop/src/public.rs)")
+                .takes_value(true)
+                .value_name("SPLIT KEY"),
+            )
+        .arg(
+            Arg::new("reset-key")
+                .short('r')
+                .long("reset-key")
+                .help("Assign reset key (possible values: https://github.com/obv-mikhail/InputBot/blob/develop/src/public.rs)")
+                .takes_value(true)
+                .value_name("RESET KEY"),
+            )
+        .after_help(
+            "This command requires privilege over one keyboard device. It is \
+NOT advised to run this program with sudo. The recommended way (to avoid most \
+security issues) is to change the group owner of your external keyboard \
+device temporarily to the current $USER.
 
-    let split_names: Vec<String> = vec![
-        "Tartarus".to_string(),
-        "Asphodel".to_string(),
-        "Elysium".to_string(),
-        "Styx".to_string(),
-        "Hades".to_string(),
-    ];
-    let splits: Arc<RwLock<Splits>> = Arc::new(RwLock::new(Splits::new(split_names.clone())));
+1. identify the external keyboard device with: `ls -la /dev/input/by-id`
+2. change group: `sudo chgrp $USER /dev/input/eventXXX`
+3. run the program `/path/to/speedrun_splits`
+4. when finished, unplug and plug again the external keyboard to reset the
+   group owner (by default, it's \"input\")
+
+When executed as $USER (find the value with `echo $USER`), files will be \
+placed under:
+* /home/<USER>/.speedrun_splits
+* /home/<USER>/.config/.speedrun_splits
+
+Note: if ran with sudo, replace /home/<USER> with /root
+
+Note2: if you are willing to introduce a vulnerability permanently, add $USER \
+to \"input\" group (group owner of eventXXX (`ls -la /dev/input/`))
+",
+        );
+    let m = cmd.clone().get_matches();
+
+    // don't log until --help is parsed
+    let default_log_file_path = match default_log_file_path() {
+        Ok(f) => f,
+        Err(e) => {
+            error!("{e}");
+            // TODO user facing message
+            return std::process::ExitCode::FAILURE;
+        }
+    };
+    let f = match fs::OpenOptions::new()
+        .append(true)
+        .write(true)
+        .create(true)
+        .open(default_log_file_path)
+    {
+        Ok(f) => f,
+        Err(e) => {
+            println!("{e}");
+            // TODO user facing message
+            return std::process::ExitCode::FAILURE;
+        }
+    };
+    let _ = WriteLogger::init(LevelFilter::Trace, Config::default(), f);
+    info!("speedrun_splits start");
+    match cmd.get_version() {
+        Some(v) => info!("Version: {v}"),
+        None => {
+            warn!("Unknown version of application");
+        }
+    }
+
+    // user arguments to load specific speedrun
+    let game = m.value_of("game");
+    let category = m.value_of("category");
+    let split_names = m.value_of("split-names");
+    let user_split_key = m.value_of("split-key");
+    let user_reset_key = m.value_of("reset-key");
+
+    let config = match parse_config() {
+        Ok(c) => c,
+        Err(e) => {
+            error!("{e}");
+            // TODO user facing message
+            return std::process::ExitCode::FAILURE;
+        }
+    };
+    let (settings, is_new) = load_speedrun_settings(
+        &config,
+        game,
+        category,
+        split_names,
+        user_split_key,
+        user_reset_key,
+    );
+    let settings = match settings {
+        Ok(s) => s,
+        Err(e) => {
+            error!("{e}");
+            // TODO user facing message
+            return std::process::ExitCode::FAILURE;
+        }
+    };
+
+    if is_new {
+        if let Err(e) = update_config_with_default_speedrun(config, &settings) {
+            error!("{e}");
+            // TODO user facing message
+            return std::process::ExitCode::FAILURE;
+        }
+    }
+    if let Err(e) = save_speedrun_settings_to_file(&settings) {
+        error!("{e}");
+        // TODO user facing message
+        return std::process::ExitCode::FAILURE;
+    }
+
+    let splits: Arc<RwLock<Splits>> =
+        Arc::new(RwLock::new(Splits::new(settings.split_names.clone())));
     let splits_ref1: Arc<RwLock<Splits>> = splits.clone();
     let splits_ref2: Arc<RwLock<Splits>> = splits.clone();
 
     let mut run = Run::new();
-    run.set_game_name("Hades");
-    run.set_category_name("Clean file");
-    for name in split_names {
+    run.set_game_name(&settings.game_name);
+    run.set_category_name(&settings.category_name);
+    for name in &settings.split_names {
         run.push_segment(Segment::new(name));
+    }
+
+    match parse_run_from_file(&settings) {
+        Ok(parsed_run) => {
+            run = parsed_run;
+        }
+        Err(e) => {
+            error!("{e}");
+            // TODO user facing message
+            return std::process::ExitCode::FAILURE;
+        }
+    };
+
+    if let Err(e) = save_run_to_file(&run, &settings) {
+        error!("{e}");
+        // TODO user facing message
+        return std::process::ExitCode::FAILURE;
     }
 
     // Arc allows any thread to point to some variable but it does not allow to
@@ -38,23 +195,55 @@ fn main() {
     let t = Arc::new(RwLock::new(Timer::new(run).expect("")));
     let t1 = t.clone();
     let t2 = t.clone();
-    let split_key = Numpad1Key;
+
+    let split_key = if let Some(k) = user_split_key {
+        match parse_key(k.to_string()) {
+            Ok(k) => k,
+            Err(e) => {
+                error!("{e}");
+                return std::process::ExitCode::FAILURE;
+            }
+        }
+    } else {
+        Numpad1Key
+    };
     info!("split key: {split_key:?}");
     split_key.bind(move || start_or_split_timer(t1.clone(), splits_ref1.clone()));
-    let reset_key = Numpad3Key;
+
+    let reset_key = if let Some(k) = user_reset_key {
+        match parse_key(k.to_string()) {
+            Ok(k) => k,
+            Err(e) => {
+                error!("{e}");
+                return std::process::ExitCode::FAILURE;
+            }
+        }
+    } else {
+        Numpad3Key
+    };
     info!("reset key: {reset_key:?}");
     reset_key.bind(move || reset(t2.clone(), splits_ref2.clone()));
 
+    // TODO remove, checks should be everywhere
+    if split_key == reset_key {
+        error!("Split key and reset key were assigned to the same key");
+        return std::process::ExitCode::FAILURE;
+    }
+
     // blocking statement can be handled by spawning its own thread
     thread::spawn(move || {
-        // TODO investigate udev for keyboard???
         inputbot::handle_input_events();
     });
 
     let options = eframe::NativeOptions::default();
-    let app = Speedrun::new("Poor man's LiveSplit".to_owned(), t, splits);
-
-    // TODO save state of speedrun
+    let app = Speedrun::new(
+        "Poor man's LiveSplit".to_owned(),
+        t,
+        splits,
+        split_key,
+        reset_key,
+        settings,
+    );
 
     // also blocking
     eframe::run_native(

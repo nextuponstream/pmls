@@ -1,21 +1,29 @@
 use eframe::egui;
+use eframe::Storage;
+use inputbot::KeybdKey;
 use livesplit_core::TimeSpan;
 use livesplit_core::Timer;
 use livesplit_core::TimerPhase::*;
 use log::{error, info, warn};
+use persistence::SpeedrunSettings;
 use std::fmt;
 use std::sync::{Arc, RwLock};
+use strum::IntoEnumIterator;
 
-enum Error {
+pub mod persistence;
+
+pub enum Error {
     UI(String),
     Timer(String),
+    UserInput(String),
 }
 
 impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let msg: String = match self {
-            Error::UI(msg) => format!("Something went wrong while refreshing the window: {msg}"),
-            Error::Timer(msg) => format!("Something went wrong with the timer: {msg}"),
+            Error::UI(msg) => format!("UI: {msg}"),
+            Error::Timer(msg) => format!("Timer: {msg}"),
+            Error::UserInput(msg) => format!("User input: {msg}"),
         };
         write!(f, "{msg}")
     }
@@ -25,14 +33,27 @@ pub struct Speedrun {
     name: String,
     timer: Arc<RwLock<Timer>>,
     splits: Arc<RwLock<Splits>>,
+    split_key: String,
+    reset_key: String,
+    settings: SpeedrunSettings,
 }
 
 impl Speedrun {
-    pub fn new(name: String, timer: Arc<RwLock<Timer>>, splits: Arc<RwLock<Splits>>) -> Self {
+    pub fn new(
+        name: String,
+        timer: Arc<RwLock<Timer>>,
+        splits: Arc<RwLock<Splits>>,
+        split_key: KeybdKey,
+        reset_key: KeybdKey,
+        settings: SpeedrunSettings,
+    ) -> Self {
         Self {
             name,
             timer,
             splits,
+            split_key: format!("{:?}", split_key),
+            reset_key: format!("{:?}", reset_key),
+            settings,
         }
     }
 
@@ -105,12 +126,23 @@ impl eframe::App for Speedrun {
                 ui.monospace(current_time);
             });
             ui.monospace("");
-            ui.monospace("Start/split: Numpad 1");
-            ui.monospace("Reset      : Numpad 3");
+            ui.monospace(format!("Start/split: {}", self.split_key));
+            ui.monospace(format!("Reset      : {}", self.reset_key));
         });
 
         // continously repaint even if out of focus
         ctx.request_repaint();
+    }
+
+    // NOTE: only called when persistence feature is enabled
+    fn save(&mut self, _storage: &mut dyn Storage) {
+        let timer = self.timer.read().unwrap();
+        let run = timer.run();
+        if let Err(e) = persistence::save_run_to_file(run, &self.settings) {
+            error!("{e}");
+        } else {
+            info!("Saved run");
+        }
     }
 }
 
@@ -273,4 +305,12 @@ pub fn reset(timer: Arc<RwLock<Timer>>, splits: Arc<RwLock<Splits>>) {
         }
     };
     timer.reset(true);
+}
+
+/// Parse user key from string `key`
+pub fn parse_key(key: String) -> Result<KeybdKey, Error> {
+    KeybdKey::iter()
+        .find(|k| format!("{:?}", k) == format!("{key}"))
+        .ok_or(format!("Could not parse user key \"{key}\""))
+        .map_err(|e| Error::UserInput(format!("{e}")))
 }
