@@ -18,3 +18,4 @@ dialog = "0.3.0"
 walkdir = "2"
 clap = { version = "3.1.18", features = ["cargo"] }
 strum = "0.24"
+itertools = "0.10.3"

@@ -2,11 +2,8 @@ use clap::{crate_authors, crate_name, crate_version, Arg, Command};
 use livesplit_core::{Run, Segment, TimeSpan, Timer};
 use log::*;
 use simplelog::{Config, WriteLogger};
-use speedrun_splits::persistence::{
-    default_log_file_path, load_speedrun_settings, parse_config, parse_run_from_file,
-    save_run_to_file, save_speedrun_settings_to_file, update_config_with_default_speedrun,
-};
-use speedrun_splits::{parse_key, reset, start_or_split_timer, Speedrun, Splits};
+use speedrun_splits::persistence::*;
+use speedrun_splits::{parse_key, pause, reset, start_or_split_timer, unpause, Speedrun, Splits};
 use std::fs;
 use std::process::ExitCode;
 use std::sync::{Arc, RwLock};
@@ -59,6 +56,22 @@ fn main() -> ExitCode {
                 .takes_value(true)
                 .value_name("RESET KEY"),
             )
+        .arg(
+            Arg::new("pause-key")
+                .short('p')
+                .long("pause-key")
+                .help("Assign pause key (possible values: https://github.com/obv-mikhail/InputBot/blob/develop/src/public.rs)")
+                .takes_value(true)
+                .value_name("PAUSE KEY"),
+            )
+        .arg(
+            Arg::new("unpause-key")
+                .short('u')
+                .long("unpause-key")
+                .help("Assign unpause key (possible values: https://github.com/obv-mikhail/InputBot/blob/develop/src/public.rs)")
+                .takes_value(true)
+                .value_name("UNPAUSE KEY"),
+            )
         .after_help(
             "This command requires privilege over one keyboard device. It is \
 NOT advised to run this program with sudo. The recommended way (to avoid most \
@@ -84,6 +97,19 @@ to \"input\" group (group owner of eventXXX (`ls -la /dev/input/`))
         );
     let m = cmd.clone().get_matches();
 
+    // create default data directory
+    let default_data_folder = match default_data_folder() {
+        Ok(f) => f,
+        Err(e) => {
+            error!("{e}");
+            // TODO user facing message
+            return std::process::ExitCode::FAILURE;
+        }
+    };
+    if !std::path::Path::new(default_data_folder.as_str()).exists() {
+        fs::create_dir(default_data_folder).unwrap();
+    }
+
     // don't log until --help is parsed
     let default_log_file_path = match default_log_file_path() {
         Ok(f) => f,
@@ -93,6 +119,7 @@ to \"input\" group (group owner of eventXXX (`ls -la /dev/input/`))
             return std::process::ExitCode::FAILURE;
         }
     };
+
     let f = match fs::OpenOptions::new()
         .append(true)
         .write(true)
@@ -121,6 +148,8 @@ to \"input\" group (group owner of eventXXX (`ls -la /dev/input/`))
     let split_names = m.value_of("split-names");
     let user_split_key = m.value_of("split-key");
     let user_reset_key = m.value_of("reset-key");
+    let user_pause_key = m.value_of("pause-key");
+    let user_unpause_key = m.value_of("unpause-key");
 
     let config = match parse_config() {
         Ok(c) => c,
@@ -137,6 +166,8 @@ to \"input\" group (group owner of eventXXX (`ls -la /dev/input/`))
         split_names,
         user_split_key,
         user_reset_key,
+        user_pause_key,
+        user_unpause_key,
     );
     let settings = match settings {
         Ok(s) => s,
@@ -213,6 +244,8 @@ to \"input\" group (group owner of eventXXX (`ls -la /dev/input/`))
 
     let t1 = t.clone();
     let t2 = t.clone();
+    let t3 = t.clone();
+    let t4 = t.clone();
 
     let split_key = match parse_key(settings.split_key.clone()) {
         Ok(k) => k,
@@ -234,10 +267,39 @@ to \"input\" group (group owner of eventXXX (`ls -la /dev/input/`))
     info!("reset key: {reset_key:?}");
     reset_key.bind(move || reset(t2.clone(), splits_ref2.clone()));
 
+    let pause_key = match parse_key(settings.pause_key.clone()) {
+        Ok(k) => k,
+        Err(e) => {
+            error!("{e}");
+            return std::process::ExitCode::FAILURE;
+        }
+    };
+    info!("pause key: {pause_key:?}");
+    pause_key.bind(move || pause(t3.clone()));
+
+    let unpause_key = match parse_key(settings.unpause_key.clone()) {
+        Ok(k) => k,
+        Err(e) => {
+            error!("{e}");
+            return std::process::ExitCode::FAILURE;
+        }
+    };
+    info!("unpause key: {unpause_key:?}");
+    unpause_key.bind(move || unpause(t4.clone()));
+
     // blocking statement can be handled by spawning its own thread
     thread::spawn(move || {
         inputbot::handle_input_events();
     });
+
+    // NOTE: for debug purposes, some keys may be "unregistered"
+    // ex: Numpad1Key works but not 2, 4, 6, 7, 8 or FX keys
+    //inputbot::KeybdKey::bind_all(|event| {
+    //    match inputbot::from_keybd_key(event) {
+    //        Some(c) => println!("{c}"),
+    //        None => println!("Unregistered Key"),
+    //    };
+    //});
 
     let options = eframe::NativeOptions::default();
     let app = Speedrun::new(
@@ -246,6 +308,8 @@ to \"input\" group (group owner of eventXXX (`ls -la /dev/input/`))
         splits,
         split_key,
         reset_key,
+        pause_key,
+        unpause_key,
         settings,
     );
 

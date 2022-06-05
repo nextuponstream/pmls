@@ -1,6 +1,8 @@
 use crate::parse_key;
 use dialog::{DialogBox, Input};
 use inputbot::KeybdKey;
+use inputbot::KeybdKey::{Numpad1Key, Numpad3Key, Numpad7Key, Numpad9Key};
+use itertools::Itertools;
 use livesplit_core::run::parser::composite;
 use livesplit_core::run::saver::livesplit;
 use livesplit_core::Run;
@@ -66,7 +68,7 @@ fn default_config_path() -> Result<String, Error> {
 }
 
 /// Returns "$HOME/.speedrun_splits" expanded
-fn default_data_folder() -> Result<String, Error> {
+pub fn default_data_folder() -> Result<String, Error> {
     // Note: if executed with sudo, home will default to /root, which is usually not desired
     let home = std::env::var("HOME").map_err(|e| Error::User(format!("{e}")))?;
     Ok(format!("{home}/.speedrun_splits"))
@@ -103,7 +105,8 @@ pub struct SpeedrunSettings {
     pub category_name: String,
     pub split_key: String,
     pub reset_key: String,
-    pub run_filepath: String,
+    pub pause_key: String,
+    pub unpause_key: String,
 }
 
 impl SpeedrunSettings {
@@ -113,12 +116,18 @@ impl SpeedrunSettings {
         category_name: String,
         split_key: KeybdKey,
         reset_key: KeybdKey,
+        pause_key: KeybdKey,
+        unpause_key: KeybdKey,
     ) -> Result<SpeedrunSettings, Error> {
-        if split_key == reset_key {
+        let keys = vec![split_key, reset_key, pause_key, unpause_key];
+        if !keys.iter().all_unique() {
             return Err(Error::SpeedrunSettings(
-                "split key cannot be assigned to the same key as the reset key".to_string(),
+                "All keys need to be bound to a different key".to_string(),
             ));
         }
+
+        let keys = vec![split_key, reset_key];
+        if keys.iter().all_unique() {}
 
         Ok(SpeedrunSettings {
             split_names,
@@ -126,12 +135,13 @@ impl SpeedrunSettings {
             category_name,
             split_key: get_key_name(split_key),
             reset_key: get_key_name(reset_key),
-            run_filepath: String::new(),
+            pause_key: get_key_name(pause_key),
+            unpause_key: get_key_name(unpause_key),
         })
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Eq, PartialEq, Hash)]
 pub enum Error {
     ConfigFileOpen(String),
     SpeedrunSettings(String),
@@ -251,6 +261,8 @@ pub fn load_speedrun_settings(
     split_names: Option<&str>,
     user_split_key: Option<&str>,
     user_reset_key: Option<&str>,
+    user_pause_key: Option<&str>,
+    user_unpause_key: Option<&str>,
 ) -> (Result<SpeedrunSettings, Error>, bool) {
     if let Some(game_name) = game_name {
         if let Some(category_name) = category_name {
@@ -260,7 +272,8 @@ pub fn load_speedrun_settings(
                 split_names: vec![],
                 split_key: String::new(),
                 reset_key: String::new(),
-                run_filepath: String::new(),
+                pause_key: String::new(),
+                unpause_key: String::new(),
             };
             return (
                 find_speedrun_by_name(settings.get_file_name(), config),
@@ -282,6 +295,8 @@ pub fn load_speedrun_settings(
                         split_names,
                         user_split_key,
                         user_reset_key,
+                        user_pause_key,
+                        user_unpause_key,
                     ),
                     true,
                 )
@@ -295,6 +310,8 @@ pub fn load_speedrun_settings(
                 split_names,
                 user_split_key,
                 user_reset_key,
+                user_pause_key,
+                user_unpause_key,
             ),
             true,
         )
@@ -374,6 +391,8 @@ fn ask_speedrun_settings_to_user(
     split_names: Option<&str>,
     user_split_key: Option<&str>,
     user_reset_key: Option<&str>,
+    user_pause_key: Option<&str>,
+    user_unpause_key: Option<&str>,
 ) -> Result<SpeedrunSettings, Error> {
     // Continuously ask for non-empty game name
     let mut game_name: String = game_name.unwrap_or_default().to_string();
@@ -400,107 +419,50 @@ fn ask_speedrun_settings_to_user(
         ).title("Enter split names"))?;
         split_names = get_splits(sn);
     }
-
-    // if both cli args are the same, try to recover by asking user
-    if let (Some(sk), Some(rk)) = (user_split_key, user_reset_key) {
-        if sk == rk {
-            warn!("Provided split and reset key (from cli args) are equal");
-            return ask_user_keybinding(split_names, game_name, category_name);
-        }
-    }
-
+    //                match get_user_output(Input::new(
+    //            "Please provide the reset key (example: \"Numpad3Key\", all possible values https://github.com/obv-mikhail/InputBot/blob/develop/src/public.rs):",
+    //        )
+    //        .title("Provide reset key")) {
     // ask user split and reset key. Prefer cli args if provided. When invalid
     // argument are provided, ask user.
     // Split and reset key cannot be the same
     loop {
         let split_key = match user_split_key {
-            // cli arg provided
             Some(k) => {
-                match parse_key(k.to_string()) {
-                    Ok(k) => k,
-                    // cli arg is invalid value, ask user
-                    Err(_) => {
-                match get_user_output(Input::new(
-            "Please provide the start/split key (example: \"Numpad1Key\", all possible values https://github.com/obv-mikhail/InputBot/blob/develop/src/public.rs):",
-        )
-                    .title("Provide split key")){
-                    Ok(i) => {
-                        match parse_key(i){
-                            Ok(k) => k,
-                            // invalid user input
-                            Err(_) => continue,
-                        }
-                    }
-                    Err(_) => continue,
-                }
-                    },
-                }
+                parse_key(k.to_string()).map_err(|e| Error::SpeedrunSettings(format!("{e}")))?
             }
-            // cli arg is not provided
-            None => {
-                match get_user_output(Input::new(
-            "Please provide the start/split key (example: \"Numpad1Key\", all possible values https://github.com/obv-mikhail/InputBot/blob/develop/src/public.rs):",
-        )
-                    .title("Provide split key")){
-                    Ok(i) => {
-                        match parse_key(i){
-                            Ok(k) => k,
-                            Err(_) => continue,
-                        }
-                    }
-                    Err(_) => continue,
-                }
-
-            }
+            None => ask_user_keybinding("start/split", format!("{:?}", Numpad1Key).as_str())?,
         };
         let reset_key = match user_reset_key {
-            // cli arg provided
             Some(k) => {
-                match parse_key(k.to_string()) {
-                    Ok(k) => k,
-                    // cli arg is invalid value, ask user
-                    Err(_) => {
-                match get_user_output(Input::new(
-            "Please provide the reset key (example: \"Numpad3Key\", all possible values https://github.com/obv-mikhail/InputBot/blob/develop/src/public.rs):",
-        )
-        .title("Provide reset key")) {
-                    Ok(i) => {
-                        match parse_key(i){
-                            Ok(k) => k,
-                            // invalid user input
-                            Err(_) => continue,
-                        }
-                    }
-                    Err(_) => continue,
-                }
-                    },
-                }
+                parse_key(k.to_string()).map_err(|e| Error::SpeedrunSettings(format!("{e}")))?
             }
-            // cli arg is not provided
-            None => {
-                match get_user_output(Input::new(
-            "Please provide the reset key (example: \"Numpad3Key\", all possible values https://github.com/obv-mikhail/InputBot/blob/develop/src/public.rs):",
-        )
-        .title("Provide reset key")){
-                    Ok(i) => {
-                        match parse_key(i){
-                            Ok(k) => k,
-                            Err(_) => continue,
-                        }
-                    }
-                    Err(_) => continue,
-                }
-
+            None => ask_user_keybinding("reset", format!("{:?}", Numpad3Key).as_str())?,
+        };
+        let pause_key = match user_pause_key {
+            Some(k) => {
+                parse_key(k.to_string()).map_err(|e| Error::SpeedrunSettings(format!("{e}")))?
             }
+            None => ask_user_keybinding("pause", format!("{:?}", Numpad7Key).as_str())?,
+        };
+        let unpause_key = match user_unpause_key {
+            Some(k) => {
+                parse_key(k.to_string()).map_err(|e| Error::SpeedrunSettings(format!("{e}")))?
+            }
+            None => ask_user_keybinding("unpause", format!("{:?}", Numpad9Key).as_str())?,
         };
 
-        if split_key != reset_key {
+        let keys = vec![split_key, reset_key, pause_key, unpause_key];
+
+        if keys.iter().all_unique() {
             return SpeedrunSettings::new(
                 split_names,
                 game_name,
                 category_name,
                 split_key,
                 reset_key,
+                pause_key,
+                unpause_key,
             );
         } else {
             warn!("Provided split and reset key cannot be the same. Retrying...")
@@ -508,51 +470,14 @@ fn ask_speedrun_settings_to_user(
     }
 }
 
-fn ask_user_keybinding(
-    split_names: Vec<String>,
-    game_name: String,
-    category_name: String,
-) -> Result<SpeedrunSettings, Error> {
-    loop {
-        let split_key = match get_user_output(Input::new(
-            "Please provide the start/split key (example: \"Numpad1Key\", all possible values https://github.com/obv-mikhail/InputBot/blob/develop/src/public.rs):",
-        )
-                    .title("Provide split key")){
-                    Ok(i) => {
-                        match parse_key(i){
-                            Ok(k) => k,
-                            Err(_) => continue,
-                        }
-                    }
-                    Err(_) => continue,
-                };
-        let reset_key = match get_user_output(Input::new(
-            "Please provide the reset key (example: \"Numpad3Key\", all possible values https://github.com/obv-mikhail/InputBot/blob/develop/src/public.rs):",
-        )
-        .title("Provide reset key")){
-                    Ok(i) => {
-                        match parse_key(i){
-                            Ok(k) => {
-k
-                            },
-                            Err(_) => continue,
-                        }
-                    }
-                    Err(_) => continue,
-                };
-        if split_key != reset_key {
-            return SpeedrunSettings::new(
-                split_names,
-                game_name,
-                category_name,
-                split_key,
-                reset_key,
-            );
-        } else {
-            warn!("Provided split and reset key are the same.");
-            continue;
-        }
-    }
+/// Ask user keybinding for `key` while displaying `help`
+fn ask_user_keybinding(key_name: &str, example_keybind: &str) -> Result<KeybdKey, Error> {
+    let k = get_user_output(&mut Input::new(format!(
+"Please provide the {key_name} key (example: \"{example_keybind}\", all possible values https://github.com/obv-mikhail/InputBot/blob/develop/src/public.rs):",
+            )).title(format!("Provide {key_name} key")))?;
+
+    let k = parse_key(k).map_err(|e| Error::User(e.to_string()))?;
+    Ok(k)
 }
 
 /// Get splits from `raw_splits`

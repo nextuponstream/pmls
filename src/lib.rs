@@ -38,6 +38,8 @@ pub struct Speedrun {
     splits: Arc<RwLock<Splits>>,
     split_key: String,
     reset_key: String,
+    pause_key: String,
+    unpause_key: String,
     settings: SpeedrunSettings,
 }
 
@@ -48,6 +50,8 @@ impl Speedrun {
         splits: Arc<RwLock<Splits>>,
         split_key: KeybdKey,
         reset_key: KeybdKey,
+        pause_key: KeybdKey,
+        unpause_key: KeybdKey,
         settings: SpeedrunSettings,
     ) -> Self {
         Self {
@@ -56,6 +60,8 @@ impl Speedrun {
             splits,
             split_key: format!("{:?}", split_key),
             reset_key: format!("{:?}", reset_key),
+            pause_key: format!("{:?}", pause_key),
+            unpause_key: format!("{:?}", unpause_key),
             settings,
         }
     }
@@ -153,6 +159,8 @@ impl eframe::App for Speedrun {
             ui.monospace("");
             ui.monospace(format!("Start/split: {}", self.split_key));
             ui.monospace(format!("Reset      : {}", self.reset_key));
+            ui.monospace(format!("Pause      : {}", self.pause_key));
+            ui.monospace(format!("Unpause    : {}", self.unpause_key));
             ui.monospace("");
             ui.monospace("Note: attempts are saved when closing the application");
             ui.monospace("Note2: reset the timer for this attempt times to be stored in the run history when you close this application.");
@@ -414,6 +422,34 @@ pub fn reset(timer: Arc<RwLock<Timer>>, splits: Arc<RwLock<Splits>>) {
         splits.update_split(i, TimeSpan::zero(), comparison);
     }
     splits.clear_time_differences();
+}
+
+/// Pause the timer
+pub fn pause(timer: Arc<RwLock<Timer>>) {
+    info!("timer paused");
+    match timer.write() {
+        Ok(mut timer) => {
+            timer.pause();
+        }
+        Err(e) => {
+            error!("{e}");
+            panic!("{e}")
+        }
+    }
+}
+
+/// Unpause (or use the resume method of) the timer
+pub fn unpause(timer: Arc<RwLock<Timer>>) {
+    info!("timer resumed");
+    match timer.write() {
+        Ok(mut timer) => {
+            timer.resume();
+        }
+        Err(e) => {
+            error!("{e}");
+            panic!("{e}")
+        }
+    }
 }
 
 /// Parse user key from string `key`
