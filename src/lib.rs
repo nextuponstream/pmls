@@ -4,7 +4,7 @@ use inputbot::KeybdKey;
 use livesplit_core::TimeSpan;
 use livesplit_core::Timer;
 use livesplit_core::TimerPhase::*;
-use log::{error, info, warn};
+use log::{debug, error, info, warn};
 use persistence::SpeedrunSettings;
 use std::fmt;
 use std::sync::{Arc, RwLock};
@@ -12,10 +12,12 @@ use strum::IntoEnumIterator;
 
 pub mod persistence;
 
+#[derive(Debug)]
 pub enum Error {
     UI(String),
     Timer(String),
     UserInput(String),
+    Other(String),
 }
 
 impl fmt::Display for Error {
@@ -24,6 +26,7 @@ impl fmt::Display for Error {
             Error::UI(msg) => format!("UI: {msg}"),
             Error::Timer(msg) => format!("Timer: {msg}"),
             Error::UserInput(msg) => format!("User input: {msg}"),
+            Error::Other(msg) => format!("Other: {msg}"),
         };
         write!(f, "{msg}")
     }
@@ -67,6 +70,8 @@ impl Speedrun {
 struct Split {
     name: String,
     time: TimeSpan,
+    comparison: TimeSpan,
+    time_difference: TimeSpan,
 }
 
 #[derive(Default)]
@@ -99,26 +104,46 @@ impl eframe::App for Speedrun {
                 panic!("{e}")
             }
         };
-        let timespan = match timer_readonly.snapshot().current_time().real_time {
+        let current_time = match timer_readonly.snapshot().current_time().real_time {
             Some(ts) => ts,
             None => {
                 warn!("Current time could not be parsed");
                 TimeSpan::default()
             }
         };
-        let current_time = format_timespan(timespan);
+        let current_time = format_timespan(current_time).unwrap();
         let padding = splits.name_padding;
         let run = timer_readonly.run();
         let category_name = run.category_name();
-        let attempts = run.attempt_count();
+        let attempts_count = run.attempt_count();
+        let comparison_name = timer_readonly.current_comparison();
+        // truncate if too long
+        let comparison_name = {
+            if comparison_name.len() >= 13 {
+                let (l, _) = comparison_name.split_at(10);
+                let comparison_name = format!("{l}...");
+                comparison_name
+            } else {
+                comparison_name.to_string()
+            }
+        };
         egui::CentralPanel::default().show(ctx, |ui| {
             ui.heading(run.game_name());
             ui.monospace(format!("Category: {}", category_name));
-            ui.monospace(format!("Attempts: {attempts}"));
+            ui.monospace(format!("Attempts: {attempts_count}"));
+
+            ui.horizontal(|ui| {
+                ui.monospace(format!(
+                    "{:<padding$}: Current time {:<13} Time difference",
+                    "Splits", comparison_name
+                ));
+            });
             for i in 0..splits.len() {
                 ui.horizontal(|ui| {
                     ui.monospace(format!("{:<padding$}:", splits.get_split_name(i)));
-                    ui.monospace(splits.get_timespan(i));
+                    ui.monospace(splits.get_time(i).unwrap());
+                    ui.monospace(splits.get_comparison(i).unwrap());
+                    ui.monospace(splits.get_time_difference(i));
                 });
             }
             ui.horizontal(|ui| {
@@ -128,6 +153,9 @@ impl eframe::App for Speedrun {
             ui.monospace("");
             ui.monospace(format!("Start/split: {}", self.split_key));
             ui.monospace(format!("Reset      : {}", self.reset_key));
+            ui.monospace("");
+            ui.monospace("Note: attempts are saved when closing the application");
+            ui.monospace("Note2: reset the timer for this attempt times to be stored in the run history when you close this application.");
         });
 
         // continously repaint even if out of focus
@@ -153,6 +181,8 @@ impl Splits {
             splits.push(Split {
                 name,
                 time: TimeSpan::default(),
+                comparison: TimeSpan::default(),
+                time_difference: TimeSpan::default(),
             });
         }
 
@@ -167,19 +197,53 @@ impl Splits {
         }
     }
 
-    /// Updates timespan for split i
-    fn update_timespan(&mut self, i: usize, timespan: TimeSpan) {
-        self.splits[i].time = timespan;
+    /// Updates displayed split `i`
+    pub fn update_split(&mut self, i: usize, time: TimeSpan, comparison: TimeSpan) {
+        self.splits[i].time = time;
+        // Comparison time gets filled at application start. When the timer
+        // starts, the current segments does not know about the comparison time
+        if comparison > TimeSpan::zero() {
+            self.splits[i].comparison = comparison;
+        }
+        if time > TimeSpan::zero() {
+            self.splits[i].time_difference = time - comparison;
+        }
     }
 
-    /// Get name of split i
+    /// Reset display split
+    fn clear_time_differences(&mut self) {
+        for i in 0..self.splits.len() {
+            self.splits[i].time_difference = TimeSpan::zero();
+        }
+    }
+
+    /// Get name of split `i`
     fn get_split_name(&self, i: usize) -> String {
         self.splits[i].name.clone()
     }
 
-    /// Get timespan of split i
-    fn get_timespan(&self, i: usize) -> String {
-        self.splits[i].format_timespan()
+    /// Get time of split `i`
+    fn get_time(&self, i: usize) -> Result<String, Error> {
+        format_timespan(self.splits[i].time)
+    }
+
+    /// Get formatted comparison of split `i`
+    fn get_comparison(&self, i: usize) -> Result<String, Error> {
+        format_timespan(self.splits[i].comparison)
+    }
+
+    /// Get formatted time difference with comparison of split `i`. '-'
+    /// indicates a timesave
+    fn get_time_difference(&self, i: usize) -> String {
+        let time_difference = self.splits[i].time_difference;
+        let sign = if time_difference.to_duration().is_negative() {
+            '-'
+        } else if time_difference.to_duration().is_positive() {
+            '+'
+        } else {
+            ' '
+        };
+        format!("{}{}", sign, format_timespan_no_padding(time_difference))
     }
 
     /// Returns the number of splits
@@ -188,24 +252,51 @@ impl Splits {
     }
 }
 
-impl Split {
-    /// Formats timespan to hh:mm:ss.ms
-    fn format_timespan(&self) -> String {
-        format_timespan(self.time)
+/// Formats timespan to "hh:mm:ss.ms". If calculating a potential timesave
+/// (where time can be negative), use `format_timespan_no_padding` instead
+pub fn format_timespan(time: TimeSpan) -> Result<String, Error> {
+    let d = time.to_duration();
+    if d.is_negative() {
+        return Err(Error::Other(
+            "Usage of negative time in function that only accepts positive time".to_string(),
+        ));
     }
-}
-
-/// Formats timespan to hh:mm:ss.ms
-pub fn format_timespan(timespan: TimeSpan) -> String {
-    let d = timespan.to_duration();
-    format!(
+    Ok(format!(
         "{:02}:{:02}:{:02}.{:03}",
         // TODO optionnal day/week formatting
         d.whole_hours().rem_euclid(24),
         d.whole_minutes().rem_euclid(60),
         d.whole_seconds().rem_euclid(60),
         d.whole_milliseconds().rem_euclid(1000)
-    )
+    ))
+}
+
+/// Formats timespan to hh:mm:ss.ms but does not display 00 values
+pub fn format_timespan_no_padding(timespan: TimeSpan) -> String {
+    let d = timespan.to_duration();
+    let h = d.whole_hours() % 24;
+    let m = d.whole_minutes() % 60;
+    // NOTE: not using abs will print out '-' in case of a time save
+    let s = format!(
+        "{:02}:{:02}:{:02}.{:03}",
+        // TODO optionnal day/week formatting
+        h.abs(),
+        m.abs(),
+        (d.whole_seconds() % 60).abs(),
+        (d.whole_milliseconds() % 1000).abs()
+    );
+
+    // always print seconds but remove minutes and hours if 0
+    if h == 0 {
+        let (_, l) = s.split_at(3);
+        if m == 0 {
+            let (_, l) = l.split_at(3);
+            return l.to_string();
+        }
+        return l.to_string();
+    }
+
+    s
 }
 
 /// Starts the timer with the relevant keybinding and logs key press
@@ -246,19 +337,27 @@ pub fn start_or_split_timer(timer: Arc<RwLock<Timer>>, splits: Arc<RwLock<Splits
             let snapshot = timer.snapshot();
             let segments = snapshot.run().segments();
             for (i, segment) in segments.iter().enumerate() {
-                if let Some(timespan) = segment.split_time().real_time {
-                    let mut splits_write = match splits
-                        .write()
-                        .map_err(|e| Error::Timer(format!("splits mutex error: {e}")))
-                    {
-                        Ok(m) => m,
-                        Err(e) => {
-                            error!("{e}");
-                            panic!("{e}")
-                        }
-                    };
-                    splits_write.update_timespan(i, timespan);
+                let comparison = timer.current_comparison();
+                let comparison = match segment.comparison(comparison).real_time {
+                    Some(ts) => ts,
+                    None => TimeSpan::default(),
                 };
+                debug!("{comparison:?}");
+                let mut splits_write = match splits
+                    .write()
+                    .map_err(|e| Error::Timer(format!("splits mutex error: {e}")))
+                {
+                    Ok(m) => m,
+                    Err(e) => {
+                        error!("{e}");
+                        panic!("{e}")
+                    }
+                };
+                if let Some(time) = segment.split_time().real_time {
+                    splits_write.update_split(i, time, comparison);
+                } else {
+                    splits_write.update_split(i, TimeSpan::zero(), comparison);
+                }
             }
 
             // if timer was started, don't check for splits or speedrun end
@@ -280,20 +379,6 @@ pub fn start_or_split_timer(timer: Arc<RwLock<Timer>>, splits: Arc<RwLock<Splits
 /// Reset the timer (which adds one attempt) and clear splits time
 pub fn reset(timer: Arc<RwLock<Timer>>, splits: Arc<RwLock<Splits>>) {
     info!("Reset keypress");
-    let mut splits = match splits
-        .write()
-        .map_err(|e| Error::Timer(format!("splits mutex error: {e}")))
-    {
-        Ok(m) => m,
-        Err(e) => {
-            error!("{e}");
-            panic!("{e}")
-        }
-    };
-    for i in 0..splits.len() {
-        splits.update_timespan(i, TimeSpan::zero());
-    }
-
     let mut timer = match timer
         .write()
         .map_err(|e| Error::Timer(format!("timer mutex error: {e}")))
@@ -305,12 +390,36 @@ pub fn reset(timer: Arc<RwLock<Timer>>, splits: Arc<RwLock<Splits>>) {
         }
     };
     timer.reset(true);
+
+    // clear display
+    let mut splits = match splits
+        .write()
+        .map_err(|e| Error::Timer(format!("splits mutex error: {e}")))
+    {
+        Ok(m) => m,
+        Err(e) => {
+            error!("{e}");
+            panic!("{e}")
+        }
+    };
+
+    // Update comparison time
+    let run = timer.run();
+    let comparison = timer.current_comparison();
+    for (i, segment) in run.segments().iter().enumerate() {
+        let comparison = match segment.comparison(comparison).real_time {
+            Some(ts) => ts,
+            None => TimeSpan::default(),
+        };
+        splits.update_split(i, TimeSpan::zero(), comparison);
+    }
+    splits.clear_time_differences();
 }
 
 /// Parse user key from string `key`
 pub fn parse_key(key: String) -> Result<KeybdKey, Error> {
     KeybdKey::iter()
-        .find(|k| format!("{:?}", k) == format!("{key}"))
+        .find(|k| format!("{:?}", k) == key)
         .ok_or(format!("Could not parse user key \"{key}\""))
-        .map_err(|e| Error::UserInput(format!("{e}")))
+        .map_err(Error::UserInput)
 }

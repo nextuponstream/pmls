@@ -182,7 +182,7 @@ impl fmt::Display for Error {
 impl SpeedrunSettings {
     /// Get file name of this (`self`) settings
     fn get_file_name(&self) -> String {
-        format!("{}_{}", self.game_name, self.category_name)
+        format!("{}_{}.txt", self.game_name, self.category_name)
     }
 
     /// Get file name of this (`self`) settings
@@ -201,7 +201,7 @@ pub fn parse_config() -> Result<Configuration, Error> {
     .show()
     .expect("Could not display dialog box");
         if choice == dialog::Choice::Yes {
-            let config = Configuration::new(default_data_folder.clone())?;
+            let config = Configuration::new(default_data_folder)?;
             match save_config_to_file(&config).map_err(|e| Error::SpeedrunSettings(format!("{e}")))
             {
                 Ok(()) => return Ok(config),
@@ -324,11 +324,11 @@ fn find_speedrun_by_name(name: String, config: &Configuration) -> Result<Speedru
             .path()
             .file_name()
             .ok_or("could not get file name")
-            .map_err(|e| Error::SpeedrunSettings(format!("{e}")))?;
+            .map_err(|e| Error::SpeedrunSettings(e.to_string()))?;
         let ss_entry = file_name
             .to_str()
             .ok_or("Error converting file name")
-            .map_err(|e| Error::SpeedrunSettings(format!("{e}")))?;
+            .map_err(|e| Error::SpeedrunSettings(e.to_string()))?;
         debug!("{ss_entry}");
         if ss_entry == name {
             info!("Found speedrun");
@@ -542,9 +542,9 @@ k
                 };
         if split_key != reset_key {
             return SpeedrunSettings::new(
-                split_names.clone(),
-                game_name.clone(),
-                category_name.clone(),
+                split_names,
+                game_name,
+                category_name,
                 split_key,
                 reset_key,
             );
@@ -622,7 +622,7 @@ pub fn save_run_to_file(run: &Run, settings: &SpeedrunSettings) -> Result<(), Er
     let file_path = format!("{default_data_folder}/{}", settings.get_run_file_name());
     let file = File::create(file_path).map_err(|e| Error::Run(format!("{e}")))?;
     let writer = BufWriter::new(file);
-    livesplit::save_run(&run, writer).map_err(|e| Error::Run(format!("{e}")))
+    livesplit::save_run(run, writer).map_err(|e| Error::Run(format!("{e}")))
 }
 
 /// Parse run from data folder

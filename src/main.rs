@@ -1,6 +1,5 @@
 use clap::{crate_authors, crate_name, crate_version, Arg, Command};
-use inputbot::KeybdKey::{Numpad1Key, Numpad3Key};
-use livesplit_core::{Run, Segment, Timer};
+use livesplit_core::{Run, Segment, TimeSpan, Timer};
 use log::*;
 use simplelog::{Config, WriteLogger};
 use speedrun_splits::persistence::{
@@ -173,14 +172,14 @@ to \"input\" group (group owner of eventXXX (`ls -la /dev/input/`))
         run.push_segment(Segment::new(name));
     }
 
+    // save run and initialize current comparison
     match parse_run_from_file(&settings) {
         Ok(parsed_run) => {
             run = parsed_run;
         }
         Err(e) => {
-            error!("{e}");
-            // TODO user facing message
-            return std::process::ExitCode::FAILURE;
+            // if file does not exists yet, don't exit yet
+            warn!("Could not parse run file: {e}");
         }
     };
 
@@ -192,43 +191,48 @@ to \"input\" group (group owner of eventXXX (`ls -la /dev/input/`))
 
     // Arc allows any thread to point to some variable but it does not allow to
     // mutate it. This is why is wrapping a RwLock
-    let t = Arc::new(RwLock::new(Timer::new(run).expect("")));
+    let t = Arc::new(RwLock::new(Timer::new(run.clone()).expect("")));
+
+    // load current comparison into the UI
+    match t.read() {
+        Ok(timer) => {
+            let mut splits = splits.write().unwrap();
+            for (i, s) in run.segments().iter().enumerate() {
+                let comparison = s.comparison(timer.current_comparison());
+                if let Some(loaded_comparison) = comparison.real_time {
+                    splits.update_split(i, TimeSpan::zero(), loaded_comparison);
+                }
+            }
+        }
+        Err(e) => {
+            error!("{e}");
+            // TODO user facing message
+            return std::process::ExitCode::FAILURE;
+        }
+    };
+
     let t1 = t.clone();
     let t2 = t.clone();
 
-    let split_key = if let Some(k) = user_split_key {
-        match parse_key(k.to_string()) {
-            Ok(k) => k,
-            Err(e) => {
-                error!("{e}");
-                return std::process::ExitCode::FAILURE;
-            }
+    let split_key = match parse_key(settings.split_key.clone()) {
+        Ok(k) => k,
+        Err(e) => {
+            error!("{e}");
+            return std::process::ExitCode::FAILURE;
         }
-    } else {
-        Numpad1Key
     };
     info!("split key: {split_key:?}");
     split_key.bind(move || start_or_split_timer(t1.clone(), splits_ref1.clone()));
 
-    let reset_key = if let Some(k) = user_reset_key {
-        match parse_key(k.to_string()) {
-            Ok(k) => k,
-            Err(e) => {
-                error!("{e}");
-                return std::process::ExitCode::FAILURE;
-            }
+    let reset_key = match parse_key(settings.reset_key.clone()) {
+        Ok(k) => k,
+        Err(e) => {
+            error!("{e}");
+            return std::process::ExitCode::FAILURE;
         }
-    } else {
-        Numpad3Key
     };
     info!("reset key: {reset_key:?}");
     reset_key.bind(move || reset(t2.clone(), splits_ref2.clone()));
-
-    // TODO remove, checks should be everywhere
-    if split_key == reset_key {
-        error!("Split key and reset key were assigned to the same key");
-        return std::process::ExitCode::FAILURE;
-    }
 
     // blocking statement can be handled by spawning its own thread
     thread::spawn(move || {
