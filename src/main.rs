@@ -2,8 +2,8 @@ use clap::{crate_authors, crate_name, crate_version, Arg, Command};
 use livesplit_core::{Run, Segment, TimeSpan, Timer};
 use log::*;
 use simplelog::{Config, WriteLogger};
-use speedrun_splits::persistence::*;
 use speedrun_splits::{parse_key, pause, reset, start_or_split_timer, unpause, Speedrun, Splits};
+use speedrun_splits::{persistence::*, Keybinding as lKeybinding};
 use std::fs;
 use std::process::ExitCode;
 use std::sync::{Arc, RwLock};
@@ -65,6 +65,7 @@ fn main() -> ExitCode {
                 .value_name("PAUSE KEY"),
             )
         .arg(
+            // NOTE: not named resume because short argument conflicts with reset
             Arg::new("unpause-key")
                 .short('u')
                 .long("unpause-key")
@@ -146,12 +147,12 @@ to \"input\" group (group owner of eventXXX (`ls -la /dev/input/`))
     let game = m.value_of("game");
     let category = m.value_of("category");
     let split_names = m.value_of("split-names");
-    let user_split_key = m.value_of("split-key");
-    let user_reset_key = m.value_of("reset-key");
-    let user_pause_key = m.value_of("pause-key");
-    let user_unpause_key = m.value_of("unpause-key");
+    let split_key = m.value_of("split-key");
+    let reset_key = m.value_of("reset-key");
+    let pause_key = m.value_of("pause-key");
+    let unpause_key = m.value_of("unpause-key");
 
-    let config = match parse_config() {
+    let config = match parse_configuration() {
         Ok(c) => c,
         Err(e) => {
             error!("{e}");
@@ -159,16 +160,9 @@ to \"input\" group (group owner of eventXXX (`ls -la /dev/input/`))
             return std::process::ExitCode::FAILURE;
         }
     };
-    let (settings, is_new) = load_speedrun_settings(
-        &config,
-        game,
-        category,
-        split_names,
-        user_split_key,
-        user_reset_key,
-        user_pause_key,
-        user_unpause_key,
-    );
+    let keybinding = UserKeybinding::new(split_key, reset_key, pause_key, unpause_key);
+    let (settings, is_new) =
+        load_speedrun_settings(&config, game, category, split_names, keybinding);
     let settings = match settings {
         Ok(s) => s,
         Err(e) => {
@@ -179,7 +173,7 @@ to \"input\" group (group owner of eventXXX (`ls -la /dev/input/`))
     };
 
     if is_new {
-        if let Err(e) = update_config_with_default_speedrun(config, &settings) {
+        if let Err(e) = update_configuration_with_default_speedrun(config, &settings) {
             error!("{e}");
             // TODO user facing message
             return std::process::ExitCode::FAILURE;
@@ -302,14 +296,12 @@ to \"input\" group (group owner of eventXXX (`ls -la /dev/input/`))
     //});
 
     let options = eframe::NativeOptions::default();
+    let keybinding = lKeybinding::new(split_key, reset_key, pause_key, unpause_key);
     let app = Speedrun::new(
         "Poor man's LiveSplit".to_owned(),
         t,
         splits,
-        split_key,
-        reset_key,
-        pause_key,
-        unpause_key,
+        keybinding,
         settings,
     );
 

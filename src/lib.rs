@@ -1,3 +1,11 @@
+//! speedrun_splits is an application that lets you time your speedrun.
+//!
+//! IMPORTANT NOTICE: This crate is is not meant to replace the official livesplit client that might come to linux
+//! once finished. Official desktop MVP state is detailed [here](https://github.com/LiveSplit/livesplit-core/projects/2).
+//!
+//! speedrun_splits allows you to be in game and use your keyboard to time your
+//! speedruns using the livesplit_core library.
+
 use eframe::egui;
 use eframe::Storage;
 use inputbot::KeybdKey;
@@ -13,6 +21,7 @@ use strum::IntoEnumIterator;
 pub mod persistence;
 
 #[derive(Debug)]
+/// General errors that may happen while using speedrun_splits
 pub enum Error {
     UI(String),
     Timer(String),
@@ -32,6 +41,7 @@ impl fmt::Display for Error {
     }
 }
 
+/// Speedrun and all its associated settings
 pub struct Speedrun {
     name: String,
     timer: Arc<RwLock<Timer>>,
@@ -43,33 +53,12 @@ pub struct Speedrun {
     settings: SpeedrunSettings,
 }
 
-impl Speedrun {
-    pub fn new(
-        name: String,
-        timer: Arc<RwLock<Timer>>,
-        splits: Arc<RwLock<Splits>>,
-        split_key: KeybdKey,
-        reset_key: KeybdKey,
-        pause_key: KeybdKey,
-        unpause_key: KeybdKey,
-        settings: SpeedrunSettings,
-    ) -> Self {
-        Self {
-            name,
-            timer,
-            splits,
-            split_key: format!("{:?}", split_key),
-            reset_key: format!("{:?}", reset_key),
-            pause_key: format!("{:?}", pause_key),
-            unpause_key: format!("{:?}", unpause_key),
-            settings,
-        }
-    }
-
-    /// Get name of speedrun application (window title)
-    pub fn get_name(&self) -> String {
-        self.name.clone()
-    }
+/// Effective keybindings in use for speedrun
+pub struct Keybinding {
+    split_key: KeybdKey,
+    reset_key: KeybdKey,
+    pause_key: KeybdKey,
+    unpause_key: KeybdKey,
 }
 
 #[derive(Default)]
@@ -81,9 +70,52 @@ struct Split {
 }
 
 #[derive(Default)]
+/// Time splits of a speedrun
 pub struct Splits {
     splits: Vec<Split>,
     name_padding: usize,
+}
+
+impl Keybinding {
+    pub fn new(
+        split_key: KeybdKey,
+        reset_key: KeybdKey,
+        pause_key: KeybdKey,
+        unpause_key: KeybdKey,
+    ) -> Keybinding {
+        Keybinding {
+            split_key,
+            reset_key,
+            pause_key,
+            unpause_key,
+        }
+    }
+}
+
+impl Speedrun {
+    pub fn new(
+        name: String,
+        timer: Arc<RwLock<Timer>>,
+        splits: Arc<RwLock<Splits>>,
+        keybinding: Keybinding,
+        settings: SpeedrunSettings,
+    ) -> Self {
+        Self {
+            name,
+            timer,
+            splits,
+            split_key: format!("{:?}", keybinding.split_key),
+            reset_key: format!("{:?}", keybinding.reset_key),
+            pause_key: format!("{:?}", keybinding.pause_key),
+            unpause_key: format!("{:?}", keybinding.unpause_key),
+            settings,
+        }
+    }
+
+    /// Get name of speedrun application (window title)
+    pub fn get_name(&self) -> String {
+        self.name.clone()
+    }
 }
 
 impl eframe::App for Speedrun {
@@ -251,7 +283,8 @@ impl Splits {
         } else {
             ' '
         };
-        format!("{}{}", sign, format_timespan_no_padding(time_difference))
+        let time_difference = format_timesave(time_difference);
+        format!("{sign}{time_difference}")
     }
 
     /// Returns the number of splits
@@ -260,9 +293,8 @@ impl Splits {
     }
 }
 
-/// Formats timespan to "hh:mm:ss.ms". If calculating a potential timesave
-/// (where time can be negative), use `format_timespan_no_padding` instead
-pub fn format_timespan(time: TimeSpan) -> Result<String, Error> {
+/// Formats `timespan` to "hh:mm:ss.ms"
+fn format_timespan(time: TimeSpan) -> Result<String, Error> {
     let d = time.to_duration();
     if d.is_negative() {
         return Err(Error::Other(
@@ -279,8 +311,8 @@ pub fn format_timespan(time: TimeSpan) -> Result<String, Error> {
     ))
 }
 
-/// Formats timespan to hh:mm:ss.ms but does not display 00 values
-pub fn format_timespan_no_padding(timespan: TimeSpan) -> String {
+/// Format `timespan` to hh:mm:ss.ms and shorten displayed text when possible
+fn format_timesave(timespan: TimeSpan) -> String {
     let d = timespan.to_duration();
     let h = d.whole_hours() % 24;
     let m = d.whole_minutes() % 60;
@@ -307,7 +339,7 @@ pub fn format_timespan_no_padding(timespan: TimeSpan) -> String {
     s
 }
 
-/// Starts the timer with the relevant keybinding and logs key press
+/// Starts `timer`, logs keypress and update `splits` display
 pub fn start_or_split_timer(timer: Arc<RwLock<Timer>>, splits: Arc<RwLock<Splits>>) {
     let message = match timer.read().map_err(|e| {
         Error::Timer(format!(
@@ -384,7 +416,7 @@ pub fn start_or_split_timer(timer: Arc<RwLock<Timer>>, splits: Arc<RwLock<Splits
     };
 }
 
-/// Reset the timer (which adds one attempt) and clear splits time
+/// Reset `timer` (which adds one attempt) and clear `splits` time display
 pub fn reset(timer: Arc<RwLock<Timer>>, splits: Arc<RwLock<Splits>>) {
     info!("Reset keypress");
     let mut timer = match timer
@@ -424,7 +456,7 @@ pub fn reset(timer: Arc<RwLock<Timer>>, splits: Arc<RwLock<Splits>>) {
     splits.clear_time_differences();
 }
 
-/// Pause the timer
+/// Pause `timer`
 pub fn pause(timer: Arc<RwLock<Timer>>) {
     info!("timer paused");
     match timer.write() {
@@ -438,7 +470,9 @@ pub fn pause(timer: Arc<RwLock<Timer>>) {
     }
 }
 
-/// Unpause (or use the resume method of) the timer
+/// Unpause `timer`
+///
+/// Uses the resume method of the timer
 pub fn unpause(timer: Arc<RwLock<Timer>>) {
     info!("timer resumed");
     match timer.write() {
@@ -452,7 +486,7 @@ pub fn unpause(timer: Arc<RwLock<Timer>>) {
     }
 }
 
-/// Parse user key from string `key`
+/// Parse `key`
 pub fn parse_key(key: String) -> Result<KeybdKey, Error> {
     KeybdKey::iter()
         .find(|k| format!("{:?}", k) == key)
