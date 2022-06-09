@@ -8,9 +8,9 @@
 use crate::{parse_key, Keybinding};
 use crate::{Error as lError, Splits};
 use dialog::{DialogBox, Input};
-use inputbot::KeybdKey;
-use inputbot::KeybdKey::{Numpad1Key, Numpad3Key, Numpad5Key, Numpad7Key, Numpad9Key};
 use itertools::Itertools;
+use livesplit_core::hotkey::KeyCode;
+use livesplit_core::hotkey::KeyCode::{Numpad1, Numpad3, Numpad5, Numpad7, Numpad9};
 use livesplit_core::run::parser::composite;
 use livesplit_core::run::saver::livesplit;
 use livesplit_core::Run;
@@ -43,14 +43,10 @@ pub struct SpeedrunSettings {
     split_names: Vec<String>,
     game_name: String,
     category_name: String,
-    split_key: String,
-    reset_key: String,
-    pause_key: String,
-    unpause_key: String,
-    comparison_key: String,
+    keybindings: Keybinding,
 }
 
-/// Keybinding provided by the user
+/// Keybinding provided by the user from cli args
 pub struct UserKeybinding<'a> {
     split_key: Option<&'a str>,
     reset_key: Option<&'a str>,
@@ -169,29 +165,24 @@ impl<'a> SpeedrunSettings {
         split_names: Vec<String>,
         game_name: String,
         category_name: String,
-        keybinding: Keybinding,
+        keybindings: Keybinding,
     ) -> Result<SpeedrunSettings, SpeedrunSettingsFileError<'a>> {
         let keys = vec![
-            keybinding.split_key,
-            keybinding.reset_key,
-            keybinding.pause_key,
-            keybinding.unpause_key,
+            keybindings.split_key,
+            keybindings.reset_key,
+            keybindings.pause_key,
+            keybindings.unpause_key,
         ];
         if !keys.iter().all_unique() {
             return Err(SpeedrunSettingsFileError::UserInput(
                 "All keys need to be bound to a different key".to_string(),
             ));
         }
-
         Ok(SpeedrunSettings {
             split_names,
             game_name,
             category_name,
-            split_key: get_key_name(keybinding.split_key),
-            reset_key: get_key_name(keybinding.reset_key),
-            pause_key: get_key_name(keybinding.pause_key),
-            unpause_key: get_key_name(keybinding.unpause_key),
-            comparison_key: get_key_name(keybinding.comparison_key),
+            keybindings,
         })
     }
 }
@@ -567,28 +558,28 @@ impl SpeedrunSettings {
     }
 
     /// Get split key from this speedrun settings
-    pub fn get_split_key(&self) -> String {
-        self.split_key.clone()
+    pub fn get_split_key(&self) -> KeyCode {
+        self.keybindings.split_key
     }
 
     /// Get reset key from this speedrun settings
-    pub fn get_reset_key(&self) -> String {
-        self.reset_key.clone()
+    pub fn get_reset_key(&self) -> KeyCode {
+        self.keybindings.reset_key
     }
 
     /// Get pause key from this speedrun settings
-    pub fn get_pause_key(&self) -> String {
-        self.pause_key.clone()
+    pub fn get_pause_key(&self) -> KeyCode {
+        self.keybindings.pause_key
     }
 
     /// Get unpause key from this speedrun settings
-    pub fn get_unpause_key(&self) -> String {
-        self.unpause_key.clone()
+    pub fn get_unpause_key(&self) -> KeyCode {
+        self.keybindings.unpause_key
     }
 
     /// Get comparison key from this speedrun settings
-    pub fn get_comparison_key(&self) -> String {
-        self.comparison_key.clone()
+    pub fn get_comparison_key(&self) -> KeyCode {
+        self.keybindings.comparison_key
     }
 }
 
@@ -650,11 +641,13 @@ pub fn load_speedrun_settings<'a>(
                 game_name: game_name.to_string(),
                 category_name: category_name.to_string(),
                 split_names: vec![],
-                split_key: String::new(),
-                reset_key: String::new(),
-                pause_key: String::new(),
-                unpause_key: String::new(),
-                comparison_key: String::new(),
+                keybindings: Keybinding {
+                    split_key: KeyCode::Numpad1,
+                    reset_key: KeyCode::Numpad3,
+                    pause_key: KeyCode::Numpad5,
+                    unpause_key: KeyCode::Numpad7,
+                    comparison_key: KeyCode::Numpad9,
+                },
             };
             return (
                 find_speedrun_by_name(settings.get_file_name(), configuration),
@@ -779,33 +772,28 @@ fn ask_speedrun_settings_to_user<'a>(
         ).title("Enter split names"))?;
         split_names = get_splits(sn);
     }
-    //                match get_user_output(Input::new(
-    //            "Please provide the reset key (example: \"Numpad3Key\", all possible values https://github.com/obv-mikhail/InputBot/blob/develop/src/public.rs):",
-    //        )
-    //        .title("Provide reset key")) {
-    // ask user split and reset key. Prefer cli args if provided. When invalid
-    // argument are provided, ask user.
-    // Split and reset key cannot be the same
+
     loop {
+        // NOTE: KeyCode does not implement display but Debug matches serialized string
         let split_key = match keybinding.split_key {
             Some(k) => parse_key(k.to_string())?,
-            None => ask_user_keybinding("start/split".to_string(), format!("{:?}", Numpad1Key))?,
+            None => ask_user_keybinding("start/split".to_string(), format!("{Numpad1:?}"))?,
         };
         let reset_key = match keybinding.reset_key {
             Some(k) => parse_key(k.to_string())?,
-            None => ask_user_keybinding("reset".to_string(), format!("{:?}", Numpad3Key))?,
+            None => ask_user_keybinding("reset".to_string(), format!("{Numpad3:?}"))?,
         };
         let pause_key = match keybinding.pause_key {
             Some(k) => parse_key(k.to_string())?,
-            None => ask_user_keybinding("pause".to_string(), format!("{:?}", Numpad7Key))?,
+            None => ask_user_keybinding("pause".to_string(), format!("{Numpad5:?}"))?,
         };
         let unpause_key = match keybinding.unpause_key {
             Some(k) => parse_key(k.to_string())?,
-            None => ask_user_keybinding("unpause".to_string(), format!("{:?}", Numpad9Key))?,
+            None => ask_user_keybinding("unpause".to_string(), format!("{Numpad7:?}"))?,
         };
         let comparison_key = match keybinding.comparison_key {
             Some(k) => parse_key(k.to_string())?,
-            None => ask_user_keybinding("comparison".to_string(), format!("{:?}", Numpad5Key))?,
+            None => ask_user_keybinding("comparison".to_string(), format!("{Numpad9:?}"))?,
         };
 
         let keys = vec![split_key, reset_key, pause_key, unpause_key];
@@ -823,7 +811,7 @@ fn ask_speedrun_settings_to_user<'a>(
 fn ask_user_keybinding<'a>(
     key_name: String,
     example_keybind: String,
-) -> Result<KeybdKey, Error<'a>> {
+) -> Result<KeyCode, Error<'a>> {
     let description = format!("Please provide the {key_name} key (example: \"{example_keybind}\", all possible values https://github.com/obv-mikhail/InputBot/blob/develop/src/public.rs):");
     let title = format!("Provide {key_name} key");
     let k = get_user_output(Input::new(description).title(title))?;
@@ -838,11 +826,6 @@ fn get_splits(raw_splits: String) -> Vec<String> {
         .map(|s| s.to_string())
         .filter(|s| !s.is_empty())
         .collect()
-}
-
-/// Get keyname from enum
-fn get_key_name(k: KeybdKey) -> String {
-    format!("{:?}", k)
 }
 
 /// Enabled default speedrun present in `settings` by updating `configuration`

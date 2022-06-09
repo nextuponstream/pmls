@@ -12,17 +12,17 @@
 
 use eframe::egui;
 use eframe::Storage;
-use inputbot::KeybdKey;
+use livesplit_core::hotkey::KeyCode;
 use livesplit_core::TimeSpan;
 use livesplit_core::Timer;
 use livesplit_core::TimerPhase::*;
 use log::{debug, error, info, warn};
 use persistence::SpeedrunSettings;
+use serde::{Deserialize, Serialize};
 use std::fmt;
 use std::fmt::Debug;
 use std::sync::PoisonError;
 use std::sync::{Arc, RwLock};
-use strum::IntoEnumIterator;
 
 pub mod persistence;
 
@@ -41,6 +41,12 @@ pub enum Error<'a> {
     UserInput(String),
     /// Unrecoverable error such as division by zero
     Other(String),
+}
+
+impl From<()> for Error<'_> {
+    fn from(_: ()) -> Self {
+        Error::Other("Could not convert key".to_string())
+    }
 }
 
 impl fmt::Display for Error<'_> {
@@ -70,12 +76,13 @@ pub struct Speedrun {
 }
 
 /// Effective keybindings in use for speedrun
+#[derive(Serialize, Deserialize)]
 pub struct Keybinding {
-    split_key: KeybdKey,
-    reset_key: KeybdKey,
-    pause_key: KeybdKey,
-    unpause_key: KeybdKey,
-    comparison_key: KeybdKey,
+    split_key: KeyCode,
+    reset_key: KeyCode,
+    pause_key: KeyCode,
+    unpause_key: KeyCode,
+    comparison_key: KeyCode,
 }
 
 #[derive(Default)]
@@ -96,18 +103,18 @@ pub struct Splits {
 impl Keybinding {
     /// Return Keybinding for speedrun_splits application
     pub fn new(
-        split_key: KeybdKey,
-        reset_key: KeybdKey,
-        pause_key: KeybdKey,
-        unpause_key: KeybdKey,
-        switch_comparison: KeybdKey,
+        split_key: KeyCode,
+        reset_key: KeyCode,
+        pause_key: KeyCode,
+        unpause_key: KeyCode,
+        comparison_key: KeyCode,
     ) -> Keybinding {
         Keybinding {
             split_key,
             reset_key,
             pause_key,
             unpause_key,
-            comparison_key: switch_comparison,
+            comparison_key,
         }
     }
 }
@@ -524,9 +531,6 @@ pub fn switch_comparison(timer: Arc<RwLock<Timer>>, splits: Arc<RwLock<Splits>>)
 }
 
 /// Parse `key`
-pub fn parse_key<'a>(key: String) -> Result<KeybdKey, Error<'a>> {
-    KeybdKey::iter()
-        .find(|k| format!("{:?}", k) == key)
-        .ok_or(format!("Could not parse user key \"{key}\""))
-        .map_err(Error::UserInput)
+pub fn parse_key<'a>(key: String) -> Result<KeyCode, Error<'a>> {
+    Ok(key.parse::<KeyCode>()?)
 }

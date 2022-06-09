@@ -1,15 +1,15 @@
 use clap::{crate_authors, crate_name, crate_version, Arg, Command};
+use livesplit_core::hotkey::KeyCode;
 use livesplit_core::{Run, Segment, TimeSpan, Timer};
 use log::*;
 use simplelog::{Config, WriteLogger};
 use speedrun_splits::{
-    parse_key, pause, reset, start_or_split_timer, switch_comparison, unpause, Speedrun, Splits,
+    pause, reset, start_or_split_timer, switch_comparison, unpause, Speedrun, Splits,
 };
 use speedrun_splits::{persistence::*, Keybinding as lKeybinding};
 use std::fs;
 use std::process::ExitCode;
 use std::sync::{Arc, RwLock};
-use std::thread;
 
 fn main() -> ExitCode {
     let cmd = Command::new(crate_name!())
@@ -46,7 +46,7 @@ fn main() -> ExitCode {
             Arg::new("split-key")
                 .short('s')
                 .long("split-key")
-                .help("Assign split key (possible values: https://github.com/obv-mikhail/InputBot/blob/develop/src/public.rs)")
+                .help("Assign split key (possible values: https://github.com/LiveSplit/livesplit-core/blob/master/crates/livesplit-hotkey/src/key_code.rs)")
                 .takes_value(true)
                 .value_name("SPLIT KEY"),
             )
@@ -54,7 +54,7 @@ fn main() -> ExitCode {
             Arg::new("reset-key")
                 .short('r')
                 .long("reset-key")
-                .help("Assign reset key (possible values: https://github.com/obv-mikhail/InputBot/blob/develop/src/public.rs)")
+                .help("Assign reset key (possible values: https://github.com/LiveSplit/livesplit-core/blob/master/crates/livesplit-hotkey/src/key_code.rs)")
                 .takes_value(true)
                 .value_name("RESET KEY"),
             )
@@ -62,7 +62,7 @@ fn main() -> ExitCode {
             Arg::new("pause-key")
                 .short('p')
                 .long("pause-key")
-                .help("Assign pause key (possible values: https://github.com/obv-mikhail/InputBot/blob/develop/src/public.rs)")
+                .help("Assign pause key (possible values: https://github.com/LiveSplit/livesplit-core/blob/master/crates/livesplit-hotkey/src/key_code.rs)")
                 .takes_value(true)
                 .value_name("PAUSE KEY"),
             )
@@ -71,7 +71,7 @@ fn main() -> ExitCode {
             Arg::new("unpause-key")
                 .short('u')
                 .long("unpause-key")
-                .help("Assign unpause key (possible values: https://github.com/obv-mikhail/InputBot/blob/develop/src/public.rs)")
+                .help("Assign unpause key (possible values: https://github.com/LiveSplit/livesplit-core/blob/master/crates/livesplit-hotkey/src/key_code.rs)")
                 .takes_value(true)
                 .value_name("UNPAUSE KEY"),
             )
@@ -79,7 +79,7 @@ fn main() -> ExitCode {
             Arg::new("comparison-key")
                 .short('c')
                 .long("comparison-key")
-                .help("Assign comparison key to switch between standard comparisons (possible values: https://github.com/obv-mikhail/InputBot/blob/develop/src/public.rs)")
+                .help("Assign comparison key to switch between standard comparisons (possible values: https://github.com/LiveSplit/livesplit-core/blob/master/crates/livesplit-hotkey/src/key_code.rs)")
                 .takes_value(true)
                 .value_name("COMPARISON KEY"),
             )
@@ -255,69 +255,54 @@ to \"input\" group (group owner of eventXXX (`ls -la /dev/input/`))
     let t4 = t.clone();
     let t5 = t.clone();
 
-    let split_key = match parse_key(settings.get_split_key()) {
-        Ok(k) => k,
-        Err(e) => {
-            error!("{e}");
-            return std::process::ExitCode::FAILURE;
-        }
-    };
+    debug!("{:?}", KeyCode::Numpad1);
+    debug!("{:#?}", KeyCode::Numpad1);
+
+    let split_key = settings.get_split_key();
     info!("split key: {split_key:?}");
-    split_key.bind(move || start_or_split_timer(t1.clone(), splits_ref1.clone()));
 
-    let reset_key = match parse_key(settings.get_reset_key()) {
-        Ok(k) => k,
-        Err(e) => {
-            error!("{e}");
-            return std::process::ExitCode::FAILURE;
-        }
-    };
+    let hook = livesplit_core::hotkey::Hook::new().unwrap();
+    if let Err(e) = hook.register(split_key, move || {
+        start_or_split_timer(t1.clone(), splits_ref1.clone())
+    }) {
+        error!("{e}");
+        // TODO user facing message
+        return std::process::ExitCode::FAILURE;
+    }
+
+    let reset_key = settings.get_reset_key();
     info!("reset key: {reset_key:?}");
-    reset_key.bind(move || reset(t2.clone(), splits_ref2.clone()));
+    if let Err(e) = hook.register(reset_key, move || reset(t2.clone(), splits_ref2.clone())) {
+        error!("{e}");
+        // TODO user facing message
+        return std::process::ExitCode::FAILURE;
+    }
 
-    let pause_key = match parse_key(settings.get_pause_key()) {
-        Ok(k) => k,
-        Err(e) => {
-            error!("{e}");
-            return std::process::ExitCode::FAILURE;
-        }
-    };
+    let pause_key = settings.get_pause_key();
     info!("pause key: {pause_key:?}");
-    pause_key.bind(move || pause(t3.clone()));
+    if let Err(e) = hook.register(pause_key, move || pause(t3.clone())) {
+        error!("{e}");
+        // TODO user facing message
+        return std::process::ExitCode::FAILURE;
+    }
 
-    let unpause_key = match parse_key(settings.get_unpause_key()) {
-        Ok(k) => k,
-        Err(e) => {
-            error!("{e}");
-            return std::process::ExitCode::FAILURE;
-        }
-    };
+    let unpause_key = settings.get_unpause_key();
     info!("unpause key: {unpause_key:?}");
-    unpause_key.bind(move || unpause(t4.clone()));
+    if let Err(e) = hook.register(unpause_key, move || unpause(t4.clone())) {
+        error!("{e}");
+        // TODO user facing message
+        return std::process::ExitCode::FAILURE;
+    }
 
-    let comparison_key = match parse_key(settings.get_comparison_key()) {
-        Ok(k) => k,
-        Err(e) => {
-            error!("{e}");
-            return std::process::ExitCode::FAILURE;
-        }
-    };
+    let comparison_key = settings.get_comparison_key();
     info!("comparison key: {comparison_key:?}");
-    comparison_key.bind(move || switch_comparison(t5.clone(), splits_ref3.clone()));
-
-    // blocking statement can be handled by spawning its own thread
-    thread::spawn(move || {
-        inputbot::handle_input_events();
-    });
-
-    // NOTE: for debug purposes, some keys may be "unregistered"
-    // ex: Numpad1Key works but not 2, 4, 6, 7, 8 or FX keys
-    //inputbot::KeybdKey::bind_all(|event| {
-    //    match inputbot::from_keybd_key(event) {
-    //        Some(c) => println!("{c}"),
-    //        None => println!("Unregistered Key"),
-    //    };
-    //});
+    if let Err(e) = hook.register(comparison_key, move || {
+        switch_comparison(t5.clone(), splits_ref3.clone())
+    }) {
+        error!("{e}");
+        // TODO user facing message
+        return std::process::ExitCode::FAILURE;
+    }
 
     let options = eframe::NativeOptions::default();
     let keybinding = lKeybinding::new(split_key, reset_key, pause_key, unpause_key, comparison_key);
