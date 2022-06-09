@@ -5,8 +5,8 @@
 //! * general configuration (`$HOME/.config/.speedrun_splits`)
 //! * log file
 
-use crate::Error as lError;
 use crate::{parse_key, Keybinding};
+use crate::{Error as lError, Splits};
 use dialog::{DialogBox, Input};
 use inputbot::KeybdKey;
 use inputbot::KeybdKey::{Numpad1Key, Numpad3Key, Numpad5Key, Numpad7Key, Numpad9Key};
@@ -17,16 +17,18 @@ use livesplit_core::Run;
 use log::*;
 use serde::{Deserialize, Serialize};
 use std::env::VarError;
+use std::fmt::Debug;
 use std::fs::File;
 use std::io::BufReader;
 use std::io::BufWriter;
 use std::io::{Read, Write};
 use std::path::Path;
 use std::path::PathBuf;
+use std::sync::PoisonError;
 use std::{fmt, fs};
 use walkdir::WalkDir;
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Clone)]
 /// Configuration file of the speedrun_splits application
 pub struct SpeedrunSplitsConfiguration {
     data_folder_path: String,
@@ -38,14 +40,14 @@ pub struct SpeedrunSplitsConfiguration {
 #[derive(Serialize, Deserialize)]
 /// Settings for speedrun
 pub struct SpeedrunSettings {
-    pub split_names: Vec<String>,
-    pub game_name: String,
-    pub category_name: String,
-    pub split_key: String,
-    pub reset_key: String,
-    pub pause_key: String,
-    pub unpause_key: String,
-    pub comparison_key: String,
+    split_names: Vec<String>,
+    game_name: String,
+    category_name: String,
+    split_key: String,
+    reset_key: String,
+    pause_key: String,
+    unpause_key: String,
+    comparison_key: String,
 }
 
 /// Keybinding provided by the user
@@ -57,49 +59,118 @@ pub struct UserKeybinding<'a> {
     comparison_key: Option<&'a str>,
 }
 
-#[derive(Debug, Eq, PartialEq, Hash)]
+#[derive(Debug)]
 /// Errors while persisting necessary files for the speedrun_splits application
-pub enum Error {
-    User(String),
-    Dialog(String),
-    IO(String),
+pub enum Error<'a> {
+    /// Input from user is invalid
+    UserInput(String),
+    /// Error with the user environment variables
+    VarError(VarError),
+    /// User cannot interact with dialog box
+    Dialog(dialog::Error),
+    /// Error with filesystem
+    IO(std::io::Error),
+    /// Unrecoverable error with timer
+    TimerWriteLock(PoisonError<std::sync::RwLockWriteGuard<'a, livesplit_core::Timer>>),
+    /// Unrecoverable error with timer
+    TimerReadLock(PoisonError<std::sync::RwLockReadGuard<'a, livesplit_core::Timer>>),
+    /// Unrecoverable error with splits display
+    SplitsReadLock(PoisonError<std::sync::RwLockReadGuard<'a, Splits>>),
+    /// Unrecoverable error with splits display
+    SplitsWriteLock(PoisonError<std::sync::RwLockWriteGuard<'a, Splits>>),
+    /// Unrecoverable error such as division by zero
     Other(String),
 }
 
 /// Errors while using the configuration file of the speedrun_splits application
-pub enum SpeedrunSplitsConfigurationFileError {
-    User(String),
-    Dialog(String),
-    IO(String),
-    DataFolder(String),
-    Conversion(String),
+pub enum SSConfigurationFileError<'a> {
+    /// Input from user is invalid
+    UserInput(String),
+    /// Error with the user environment variables
+    VarError(VarError),
+    /// User cannot interact with dialog box
+    Dialog(dialog::Error),
+    /// Error with filesystem
+    IO(std::io::Error),
+    /// Error while parsing user's speedrun_splits data folder
+    DataFolder(walkdir::Error),
+    /// Serialization to toml format error
+    Serialize(toml::ser::Error),
+    /// Deserialization from toml format error
+    Deserialize(toml::de::Error),
+    /// Unrecoverable error with timer
+    TimerWriteLock(PoisonError<std::sync::RwLockWriteGuard<'a, livesplit_core::Timer>>),
+    /// Unrecoverable error with timer
+    TimerReadLock(PoisonError<std::sync::RwLockReadGuard<'a, livesplit_core::Timer>>),
+    /// Unrecoverable error with splits display
+    SplitsReadLock(PoisonError<std::sync::RwLockReadGuard<'a, Splits>>),
+    /// Unrecoverable error with splits display
+    SplitsWriteLock(PoisonError<std::sync::RwLockWriteGuard<'a, Splits>>),
+    /// Unrecoverable error such as division by zero
     Other(String),
 }
 
 /// Errors while using the settings file of a speedrun
-pub enum SpeedrunSettingsFileError {
-    User(String),
-    Dialog(String),
-    Conversion(String),
-    IO(String),
+pub enum SpeedrunSettingsFileError<'a> {
+    /// Input from user is invalid
+    UserInput(String),
+    /// Serialization to toml format error
+    Serialize(toml::ser::Error),
+    /// Deserialization from toml format error
+    Deserialize(toml::de::Error),
+    /// Conversion of OS string for filepath
+    OSStringConversion(String),
+    /// Error with the user environment variables
+    VarError(VarError),
+    /// User cannot interact with dialog box
+    Dialog(dialog::Error),
+    /// Error with filesystem
+    IO(std::io::Error),
+    /// Unrecoverable error with timer
+    TimerWriteLock(PoisonError<std::sync::RwLockWriteGuard<'a, livesplit_core::Timer>>),
+    /// Unrecoverable error with timer
+    TimerReadLock(PoisonError<std::sync::RwLockReadGuard<'a, livesplit_core::Timer>>),
+    /// Unrecoverable error with splits display
+    SplitsReadLock(PoisonError<std::sync::RwLockReadGuard<'a, Splits>>),
+    /// Unrecoverable error with splits display
+    SplitsWriteLock(PoisonError<std::sync::RwLockWriteGuard<'a, Splits>>),
+    /// Unrecoverable error such as division by zero
     Other(String),
 }
 
 /// Errors while using the run file of a speedrun
-pub enum RunFileError {
-    Save(String),
-    Parse(String),
-    User(String),
-    IO(String),
+pub enum RunFileError<'a> {
+    /// Input from user is invalid
+    UserInput(String),
+    /// Cannot save `.lss` file
+    Save(livesplit_core::run::saver::livesplit::Error),
+    /// Cannot parse `.lss` file
+    Parse(livesplit_core::run::parser::composite::Error),
+    /// Error with the user environment variables
+    VarError(VarError),
+    /// User cannot interact with dialog box
+    Dialog(dialog::Error),
+    /// Error with filesystem
+    IO(std::io::Error),
+    /// Unrecoverable error with timer
+    TimerWriteLock(PoisonError<std::sync::RwLockWriteGuard<'a, livesplit_core::Timer>>),
+    /// Unrecoverable error with timer
+    TimerReadLock(PoisonError<std::sync::RwLockReadGuard<'a, livesplit_core::Timer>>),
+    /// Unrecoverable error with splits display
+    SplitsReadLock(PoisonError<std::sync::RwLockReadGuard<'a, Splits>>),
+    /// Unrecoverable error with splits display
+    SplitsWriteLock(PoisonError<std::sync::RwLockWriteGuard<'a, Splits>>),
+    /// Unrecoverable error such as division by zero
+    Other(String),
 }
 
-impl SpeedrunSettings {
+impl<'a> SpeedrunSettings {
     fn new(
         split_names: Vec<String>,
         game_name: String,
         category_name: String,
         keybinding: Keybinding,
-    ) -> Result<SpeedrunSettings, SpeedrunSettingsFileError> {
+    ) -> Result<SpeedrunSettings, SpeedrunSettingsFileError<'a>> {
         let keys = vec![
             keybinding.split_key,
             keybinding.reset_key,
@@ -107,7 +178,7 @@ impl SpeedrunSettings {
             keybinding.unpause_key,
         ];
         if !keys.iter().all_unique() {
-            return Err(SpeedrunSettingsFileError::User(
+            return Err(SpeedrunSettingsFileError::UserInput(
                 "All keys need to be bound to a different key".to_string(),
             ));
         }
@@ -125,8 +196,8 @@ impl SpeedrunSettings {
     }
 }
 
-impl SpeedrunSplitsConfiguration {
-    fn new() -> Result<SpeedrunSplitsConfiguration, SpeedrunSplitsConfigurationFileError> {
+impl<'a> SpeedrunSplitsConfiguration {
+    fn new() -> Result<SpeedrunSplitsConfiguration, SSConfigurationFileError<'a>> {
         Ok(SpeedrunSplitsConfiguration {
             data_folder_path: default_data_folder()?,
             default_speedrun_name: None,
@@ -135,216 +206,260 @@ impl SpeedrunSplitsConfiguration {
     }
 }
 
-impl fmt::Display for SpeedrunSplitsConfigurationFileError {
+impl<'a> fmt::Display for SSConfigurationFileError<'a> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            SpeedrunSplitsConfigurationFileError::User(msg) => writeln!(f, "{msg}"),
-            SpeedrunSplitsConfigurationFileError::Dialog(msg) => writeln!(f, "{msg}"),
-            SpeedrunSplitsConfigurationFileError::IO(msg) => writeln!(f, "{msg}"),
-            SpeedrunSplitsConfigurationFileError::DataFolder(msg) => writeln!(f, "{msg}"),
-            SpeedrunSplitsConfigurationFileError::Conversion(msg) => writeln!(f, "{msg}"),
-            SpeedrunSplitsConfigurationFileError::Other(msg) => writeln!(f, "{msg}"),
+            SSConfigurationFileError::UserInput(msg) => writeln!(f, "{msg}"),
+            SSConfigurationFileError::Dialog(de) => fmt::Display::fmt(de, f),
+            SSConfigurationFileError::IO(ioe) => fmt::Display::fmt(ioe, f),
+            SSConfigurationFileError::DataFolder(wde) => fmt::Display::fmt(wde, f),
+            SSConfigurationFileError::Serialize(se) => fmt::Display::fmt(se, f),
+            SSConfigurationFileError::Deserialize(de) => fmt::Display::fmt(de, f),
+            SSConfigurationFileError::TimerReadLock(lock) => fmt::Display::fmt(lock, f),
+            SSConfigurationFileError::TimerWriteLock(lock) => fmt::Display::fmt(lock, f),
+            SSConfigurationFileError::SplitsReadLock(lock) => fmt::Display::fmt(lock, f),
+            SSConfigurationFileError::SplitsWriteLock(lock) => fmt::Display::fmt(lock, f),
+            SSConfigurationFileError::VarError(v) => fmt::Display::fmt(v, f),
+            SSConfigurationFileError::Other(msg) => writeln!(f, "{msg}"),
         }
     }
 }
 
-impl From<VarError> for SpeedrunSplitsConfigurationFileError {
+impl<'a> From<std::io::Error> for Error<'a> {
+    fn from(e: std::io::Error) -> Self {
+        Error::IO(e)
+    }
+}
+
+impl<'a> From<VarError> for Error<'a> {
     fn from(e: VarError) -> Self {
-        SpeedrunSplitsConfigurationFileError::User(e.to_string())
+        Error::VarError(e)
     }
 }
 
-impl From<std::io::Error> for Error {
-    fn from(e: std::io::Error) -> Self {
-        Error::IO(e.to_string())
-    }
-}
-
-impl From<dialog::Error> for SpeedrunSplitsConfigurationFileError {
-    fn from(e: dialog::Error) -> Self {
-        SpeedrunSplitsConfigurationFileError::Dialog(e.to_string())
-    }
-}
-
-impl From<std::io::Error> for RunFileError {
-    fn from(e: std::io::Error) -> Self {
-        RunFileError::IO(e.to_string())
-    }
-}
-
-impl From<VarError> for Error {
-    fn from(e: VarError) -> Self {
-        Error::User(e.to_string())
-    }
-}
-
-impl From<Error> for RunFileError {
-    fn from(e: Error) -> Self {
+impl<'a> From<lError<'a>> for Error<'a> {
+    fn from(e: lError<'a>) -> Self {
         match e {
-            Error::User(msg) => RunFileError::User(msg),
-            _ => panic!(""),
-        }
-    }
-}
-
-impl From<livesplit_core::run::parser::composite::Error> for RunFileError {
-    fn from(e: livesplit_core::run::parser::composite::Error) -> Self {
-        RunFileError::Parse(e.to_string())
-    }
-}
-
-impl From<livesplit_core::run::saver::livesplit::Error> for RunFileError {
-    fn from(e: livesplit_core::run::saver::livesplit::Error) -> Self {
-        RunFileError::Save(e.to_string())
-    }
-}
-
-impl From<std::io::Error> for SpeedrunSplitsConfigurationFileError {
-    fn from(e: std::io::Error) -> Self {
-        SpeedrunSplitsConfigurationFileError::IO(e.to_string())
-    }
-}
-
-impl From<lError> for Error {
-    fn from(e: lError) -> Self {
-        match e {
-            lError::UserInput(msg) => Error::User(msg),
-            lError::UI(msg) => Error::Other(format!("UI: {msg}")),
-            lError::Timer(msg) => Error::Other(format!("Timer: {msg}")),
+            lError::UserInput(msg) => Error::UserInput(msg),
+            lError::TimerWriteLock(lock) => Error::TimerWriteLock(lock),
+            lError::TimerReadLock(lock) => Error::TimerReadLock(lock),
+            lError::SplitsReadLock(lock) => Error::SplitsReadLock(lock),
+            lError::SplitsWriteLock(lock) => Error::SplitsWriteLock(lock),
             lError::Other(msg) => Error::Other(msg),
         }
     }
 }
 
-impl From<Error> for SpeedrunSplitsConfigurationFileError {
-    fn from(e: Error) -> Self {
+impl<'a> From<VarError> for SSConfigurationFileError<'a> {
+    fn from(e: VarError) -> Self {
+        SSConfigurationFileError::VarError(e)
+    }
+}
+
+impl<'a> From<dialog::Error> for SSConfigurationFileError<'a> {
+    fn from(e: dialog::Error) -> Self {
+        SSConfigurationFileError::Dialog(e)
+    }
+}
+
+impl<'a> From<std::io::Error> for RunFileError<'a> {
+    fn from(e: std::io::Error) -> Self {
+        RunFileError::IO(e)
+    }
+}
+
+impl<'a> From<Error<'a>> for RunFileError<'a> {
+    fn from(e: Error<'a>) -> Self {
         match e {
-            Error::User(msg) => SpeedrunSplitsConfigurationFileError::User(msg),
-            Error::Dialog(msg) => SpeedrunSplitsConfigurationFileError::Dialog(msg),
-            Error::IO(msg) => SpeedrunSplitsConfigurationFileError::IO(msg),
-            Error::Other(msg) => SpeedrunSplitsConfigurationFileError::Other(msg),
+            Error::UserInput(msg) => RunFileError::UserInput(msg),
+            Error::VarError(ve) => RunFileError::VarError(ve),
+            Error::Dialog(de) => RunFileError::Dialog(de),
+            Error::IO(io) => RunFileError::IO(io),
+            Error::TimerWriteLock(lock) => RunFileError::TimerWriteLock(lock),
+            Error::TimerReadLock(lock) => RunFileError::TimerReadLock(lock),
+            Error::SplitsReadLock(lock) => RunFileError::SplitsReadLock(lock),
+            Error::SplitsWriteLock(lock) => RunFileError::SplitsWriteLock(lock),
+            Error::Other(msg) => RunFileError::Other(msg),
         }
     }
 }
 
-impl From<toml::de::Error> for SpeedrunSettingsFileError {
-    fn from(e: toml::de::Error) -> Self {
-        SpeedrunSettingsFileError::Conversion(e.to_string())
+impl<'a> From<livesplit_core::run::parser::composite::Error> for RunFileError<'a> {
+    fn from(e: livesplit_core::run::parser::composite::Error) -> Self {
+        RunFileError::Parse(e)
     }
 }
 
-impl From<toml::ser::Error> for SpeedrunSplitsConfigurationFileError {
-    fn from(e: toml::ser::Error) -> Self {
-        SpeedrunSplitsConfigurationFileError::Conversion(e.to_string())
+impl<'a> From<livesplit_core::run::saver::livesplit::Error> for RunFileError<'a> {
+    fn from(e: livesplit_core::run::saver::livesplit::Error) -> Self {
+        RunFileError::Save(e)
     }
 }
 
-impl From<toml::ser::Error> for SpeedrunSettingsFileError {
-    fn from(e: toml::ser::Error) -> Self {
-        SpeedrunSettingsFileError::Conversion(e.to_string())
+impl<'a> From<std::io::Error> for SSConfigurationFileError<'a> {
+    fn from(io: std::io::Error) -> Self {
+        SSConfigurationFileError::IO(io)
     }
 }
 
-impl From<std::io::Error> for SpeedrunSettingsFileError {
-    fn from(e: std::io::Error) -> Self {
-        SpeedrunSettingsFileError::IO(e.to_string())
-    }
-}
-
-impl From<&str> for SpeedrunSettingsFileError {
-    fn from(e: &str) -> Self {
-        SpeedrunSettingsFileError::Conversion(e.to_string())
-    }
-}
-
-impl From<walkdir::Error> for SpeedrunSplitsConfigurationFileError {
-    fn from(e: walkdir::Error) -> Self {
-        SpeedrunSplitsConfigurationFileError::DataFolder(e.to_string())
-    }
-}
-
-impl From<SpeedrunSplitsConfigurationFileError> for std::fmt::Error {
-    fn from(e: SpeedrunSplitsConfigurationFileError) -> Self {
-        // log error
-        error!("{e}");
-        std::fmt::Error
-    }
-}
-
-impl From<Error> for std::fmt::Error {
-    fn from(e: Error) -> Self {
-        // log error
-        error!("{e}");
-        std::fmt::Error
-    }
-}
-
-impl From<lError> for SpeedrunSettingsFileError {
-    fn from(e: lError) -> Self {
+impl<'a> From<Error<'a>> for SSConfigurationFileError<'a> {
+    fn from(e: Error<'a>) -> Self {
         match e {
-            lError::UserInput(msg) => SpeedrunSettingsFileError::User(msg),
-            lError::UI(msg) => SpeedrunSettingsFileError::Other(format!("UI: {msg}")),
-            lError::Timer(msg) => SpeedrunSettingsFileError::Other(format!("Timer: {msg}")),
+            Error::UserInput(msg) => SSConfigurationFileError::UserInput(msg),
+            Error::Dialog(de) => SSConfigurationFileError::Dialog(de),
+            Error::IO(io) => SSConfigurationFileError::IO(io),
+            Error::VarError(ve) => SSConfigurationFileError::VarError(ve),
+            Error::TimerReadLock(lock) => SSConfigurationFileError::TimerReadLock(lock),
+            Error::TimerWriteLock(lock) => SSConfigurationFileError::TimerWriteLock(lock),
+            Error::SplitsReadLock(lock) => SSConfigurationFileError::SplitsReadLock(lock),
+            Error::SplitsWriteLock(lock) => SSConfigurationFileError::SplitsWriteLock(lock),
+            Error::Other(msg) => SSConfigurationFileError::Other(msg),
+        }
+    }
+}
+
+impl<'a> From<toml::de::Error> for SpeedrunSettingsFileError<'a> {
+    fn from(e: toml::de::Error) -> Self {
+        SpeedrunSettingsFileError::Deserialize(e)
+    }
+}
+
+impl<'a> From<toml::ser::Error> for SSConfigurationFileError<'a> {
+    fn from(e: toml::ser::Error) -> Self {
+        SSConfigurationFileError::Serialize(e)
+    }
+}
+
+impl<'a> From<toml::ser::Error> for SpeedrunSettingsFileError<'a> {
+    fn from(e: toml::ser::Error) -> Self {
+        SpeedrunSettingsFileError::Serialize(e)
+    }
+}
+
+impl<'a> From<std::io::Error> for SpeedrunSettingsFileError<'a> {
+    fn from(e: std::io::Error) -> Self {
+        SpeedrunSettingsFileError::IO(e)
+    }
+}
+
+impl<'a> From<&str> for SpeedrunSettingsFileError<'a> {
+    fn from(e: &str) -> Self {
+        SpeedrunSettingsFileError::OSStringConversion(e.to_string())
+    }
+}
+
+impl<'a> From<walkdir::Error> for SSConfigurationFileError<'a> {
+    fn from(e: walkdir::Error) -> Self {
+        SSConfigurationFileError::DataFolder(e)
+    }
+}
+
+impl<'a> From<SSConfigurationFileError<'a>> for std::fmt::Error {
+    fn from(e: SSConfigurationFileError) -> Self {
+        // log error before losing information
+        error!("{e}");
+        std::fmt::Error
+    }
+}
+
+impl<'a> From<Error<'a>> for std::fmt::Error {
+    fn from(e: Error) -> Self {
+        // log error before losing information
+        error!("{e}");
+        std::fmt::Error
+    }
+}
+
+impl<'a> From<lError<'a>> for SpeedrunSettingsFileError<'a> {
+    fn from(e: lError<'a>) -> Self {
+        match e {
+            lError::UserInput(msg) => SpeedrunSettingsFileError::UserInput(msg),
+            lError::TimerWriteLock(lock) => SpeedrunSettingsFileError::TimerWriteLock(lock),
+            lError::TimerReadLock(lock) => SpeedrunSettingsFileError::TimerReadLock(lock),
+            lError::SplitsReadLock(lock) => SpeedrunSettingsFileError::SplitsReadLock(lock),
+            lError::SplitsWriteLock(lock) => SpeedrunSettingsFileError::SplitsWriteLock(lock),
             lError::Other(msg) => SpeedrunSettingsFileError::Other(msg),
         }
     }
 }
 
-impl From<Error> for SpeedrunSettingsFileError {
-    fn from(e: Error) -> Self {
+impl<'a> From<Error<'a>> for SpeedrunSettingsFileError<'a> {
+    fn from(e: Error<'a>) -> Self {
         match e {
-            Error::Dialog(msg) => SpeedrunSettingsFileError::Dialog(msg),
-            Error::User(msg) => SpeedrunSettingsFileError::User(msg),
-            Error::IO(msg) => SpeedrunSettingsFileError::IO(msg),
+            Error::Dialog(de) => SpeedrunSettingsFileError::Dialog(de),
+            Error::UserInput(msg) => SpeedrunSettingsFileError::UserInput(msg),
+            Error::IO(io) => SpeedrunSettingsFileError::IO(io),
+            Error::VarError(ve) => SpeedrunSettingsFileError::VarError(ve),
+            Error::TimerReadLock(lock) => SpeedrunSettingsFileError::TimerReadLock(lock),
+            Error::TimerWriteLock(lock) => SpeedrunSettingsFileError::TimerWriteLock(lock),
+            Error::SplitsReadLock(lock) => SpeedrunSettingsFileError::SplitsReadLock(lock),
+            Error::SplitsWriteLock(lock) => SpeedrunSettingsFileError::SplitsWriteLock(lock),
             Error::Other(msg) => SpeedrunSettingsFileError::Other(msg),
         }
     }
 }
 
-impl From<toml::de::Error> for SpeedrunSplitsConfigurationFileError {
+impl<'a> From<toml::de::Error> for SSConfigurationFileError<'a> {
     fn from(e: toml::de::Error) -> Self {
-        SpeedrunSplitsConfigurationFileError::Conversion(e.to_string())
+        SSConfigurationFileError::Deserialize(e)
     }
 }
 
-impl fmt::Display for SpeedrunSettingsFileError {
+impl<'a> fmt::Display for SpeedrunSettingsFileError<'a> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let msg = match self {
-            SpeedrunSettingsFileError::User(msg) => msg.to_owned(),
-            SpeedrunSettingsFileError::Dialog(msg) => msg.to_owned(),
-            SpeedrunSettingsFileError::Conversion(msg) => msg.to_owned(),
-            SpeedrunSettingsFileError::IO(msg) => msg.to_owned(),
-            SpeedrunSettingsFileError::Other(msg) => msg.to_owned(),
-        };
-        writeln!(f, "{msg}")
+        match self {
+            SpeedrunSettingsFileError::UserInput(msg) => writeln!(f, "{msg}"),
+            SpeedrunSettingsFileError::OSStringConversion(msg) => writeln!(f, "{msg}"),
+            SpeedrunSettingsFileError::VarError(ve) => fmt::Display::fmt(ve, f),
+            SpeedrunSettingsFileError::Dialog(de) => fmt::Display::fmt(de, f),
+            SpeedrunSettingsFileError::Serialize(se) => fmt::Display::fmt(se, f),
+            SpeedrunSettingsFileError::Deserialize(de) => fmt::Display::fmt(de, f),
+            SpeedrunSettingsFileError::IO(ioe) => fmt::Display::fmt(ioe, f),
+            SpeedrunSettingsFileError::TimerReadLock(lock) => fmt::Display::fmt(lock, f),
+            SpeedrunSettingsFileError::TimerWriteLock(lock) => fmt::Display::fmt(lock, f),
+            SpeedrunSettingsFileError::SplitsReadLock(lock) => fmt::Display::fmt(lock, f),
+            SpeedrunSettingsFileError::SplitsWriteLock(lock) => fmt::Display::fmt(lock, f),
+            SpeedrunSettingsFileError::Other(msg) => writeln!(f, "{msg}"),
+        }
     }
 }
 
-impl fmt::Display for RunFileError {
+impl<'a> fmt::Display for RunFileError<'a> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let msg = match self {
-            RunFileError::Save(msg) => msg.to_owned(),
-            RunFileError::Parse(msg) => msg.to_owned(),
-            RunFileError::User(msg) => msg.to_owned(),
-            RunFileError::IO(msg) => msg.to_owned(),
-        };
-        write!(f, "{msg}")
+        match self {
+            RunFileError::UserInput(msg) => writeln!(f, "{msg}"),
+            RunFileError::Save(se) => fmt::Display::fmt(se, f),
+            RunFileError::Parse(ce) => fmt::Display::fmt(ce, f),
+            RunFileError::IO(msg) => fmt::Display::fmt(msg, f),
+            RunFileError::VarError(ve) => fmt::Display::fmt(ve, f),
+            RunFileError::Dialog(de) => fmt::Display::fmt(de, f),
+            RunFileError::TimerReadLock(lock) => fmt::Display::fmt(lock, f),
+            RunFileError::TimerWriteLock(lock) => fmt::Display::fmt(lock, f),
+            RunFileError::SplitsReadLock(lock) => fmt::Display::fmt(lock, f),
+            RunFileError::SplitsWriteLock(lock) => fmt::Display::fmt(lock, f),
+            RunFileError::Other(msg) => writeln!(f, "{msg}"),
+        }
     }
 }
 
-impl fmt::Display for Error {
+impl<'a> fmt::Display for Error<'a> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let msg: String = match self {
-            Error::User(msg) => msg.to_owned(),
-            Error::Dialog(msg) => msg.to_owned(),
-            Error::IO(msg) => msg.to_owned(),
-            Error::Other(msg) => msg.to_owned(),
-        };
-        write!(f, "{msg}")
+        match self {
+            Error::UserInput(msg) => writeln!(f, "{msg}"),
+            Error::VarError(ve) => fmt::Display::fmt(ve, f),
+            Error::Dialog(de) => fmt::Display::fmt(de, f),
+            Error::IO(ioe) => fmt::Display::fmt(ioe, f),
+            Error::TimerReadLock(lock) => fmt::Display::fmt(lock, f),
+            Error::TimerWriteLock(lock) => fmt::Display::fmt(lock, f),
+            Error::SplitsReadLock(lock) => fmt::Display::fmt(lock, f),
+            Error::SplitsWriteLock(lock) => fmt::Display::fmt(lock, f),
+            Error::Other(msg) => writeln!(f, "{msg}"),
+        }
     }
 }
 
 impl<'a> UserKeybinding<'_> {
+    /// Represents keybindings provided by the user
     pub fn new(
         split_key: Option<&'a str>,
         reset_key: Option<&'a str>,
@@ -369,7 +484,7 @@ impl<'a> UserKeybinding<'_> {
 //
 // Note: can't use $HOME as is
 /// Returns "$HOME/.config/.speedrun_splits" expanded
-fn default_config_path() -> Result<String, SpeedrunSplitsConfigurationFileError> {
+fn default_config_path<'a>() -> Result<String, SSConfigurationFileError<'a>> {
     //let home = match std::env::var("HOME") {
     // NOTE: using std::env::var(HOME) with sudo gives root which is bad.
     // `su <sudoer USER>` works with desired user but you also give root access
@@ -413,14 +528,14 @@ fn default_config_path() -> Result<String, SpeedrunSplitsConfigurationFileError>
 }
 
 /// Returns "$HOME/.speedrun_splits" expanded
-pub fn default_data_folder() -> Result<String, Error> {
+pub fn default_data_folder<'a>() -> Result<String, Error<'a>> {
     // Note: if executed with sudo, home will default to /root, which is usually not desired
     let home = std::env::var("HOME")?;
     Ok(format!("{home}/.speedrun_splits"))
 }
 
 /// Returns "$HOME/.speedrun_splits/logs.txt"
-pub fn default_log_file_path() -> Result<String, Error> {
+pub fn default_log_file_path<'a>() -> Result<String, Error<'a>> {
     let home = std::env::var("HOME")?;
     Ok(format!("{home}/.speedrun_splits/logs.txt"))
 }
@@ -435,11 +550,51 @@ impl SpeedrunSettings {
     fn get_run_file_name(&self) -> String {
         format!("{}_{}.lss", self.game_name, self.category_name)
     }
+
+    /// Return the name of the game for this speedrun
+    pub fn get_game_name(&self) -> String {
+        self.game_name.clone()
+    }
+
+    /// Return the name of the game category for this speedrun
+    pub fn get_category_name(&self) -> String {
+        self.category_name.clone()
+    }
+
+    /// Return names of splits for this speedrun
+    pub fn get_split_names(&self) -> Vec<String> {
+        self.split_names.clone()
+    }
+
+    /// Get split key from this speedrun settings
+    pub fn get_split_key(&self) -> String {
+        self.split_key.clone()
+    }
+
+    /// Get reset key from this speedrun settings
+    pub fn get_reset_key(&self) -> String {
+        self.reset_key.clone()
+    }
+
+    /// Get pause key from this speedrun settings
+    pub fn get_pause_key(&self) -> String {
+        self.pause_key.clone()
+    }
+
+    /// Get unpause key from this speedrun settings
+    pub fn get_unpause_key(&self) -> String {
+        self.unpause_key.clone()
+    }
+
+    /// Get comparison key from this speedrun settings
+    pub fn get_comparison_key(&self) -> String {
+        self.comparison_key.clone()
+    }
 }
 
 /// Parse configuration file at default path and ask user if not present
-pub fn parse_configuration(
-) -> Result<SpeedrunSplitsConfiguration, SpeedrunSplitsConfigurationFileError> {
+pub fn parse_configuration<'a>() -> Result<SpeedrunSplitsConfiguration, SSConfigurationFileError<'a>>
+{
     let default_config_path = default_config_path()?;
     let default_data_folder = default_data_folder()?;
     if !Path::new(default_config_path.as_str()).exists() {
@@ -479,13 +634,16 @@ pub fn parse_configuration(
 ///
 /// Use user provided `game_name` and `category_name` if present. Otherwise,
 /// fall back to default speedrun
-pub fn load_speedrun_settings(
-    configuration: &SpeedrunSplitsConfiguration,
+pub fn load_speedrun_settings<'a>(
+    configuration: &'a SpeedrunSplitsConfiguration,
     game_name: Option<&str>,
     category_name: Option<&str>,
     split_names: Option<&str>,
     user_keybinding: UserKeybinding,
-) -> (Result<SpeedrunSettings, SpeedrunSettingsFileError>, bool) {
+) -> (
+    Result<SpeedrunSettings, SpeedrunSettingsFileError<'a>>,
+    bool,
+) {
     if let Some(game_name) = game_name {
         if let Some(category_name) = category_name {
             let settings = SpeedrunSettings {
@@ -537,7 +695,7 @@ fn find_speedrun_by_name(
 ) -> Result<SpeedrunSettings, SpeedrunSettingsFileError> {
     let data_folder_path = configuration.data_folder_path.as_str();
     if name.is_empty() {
-        return Err(SpeedrunSettingsFileError::User(
+        return Err(SpeedrunSettingsFileError::UserInput(
             "Speedrun name cannot be empty.".to_string(),
         ));
     }
@@ -547,7 +705,7 @@ fn find_speedrun_by_name(
             Ok(e) => e,
             Err(e) => {
                 warn!("Skipping entry that could not be parsed");
-                debug!("Skipped entry error: {e}");
+                debug!("Skipped entry: {e}");
                 continue;
             }
         };
@@ -565,14 +723,14 @@ fn find_speedrun_by_name(
             return Ok(ss);
         }
     }
-    Err(SpeedrunSettingsFileError::User(format!(
+    Err(SpeedrunSettingsFileError::UserInput(format!(
         "Did not find speedrun with name {}",
         name
     )))
 }
 
 /// Get user output. Exit program if user exits dialog
-fn get_user_output(input: &mut Input) -> Result<String, Error> {
+fn get_user_output<'a>(input: &mut Input) -> Result<String, Error<'a>> {
     match input.show() {
         Ok(i) => match i {
             Some(i) => Ok(i),
@@ -584,18 +742,18 @@ fn get_user_output(input: &mut Input) -> Result<String, Error> {
             }
         },
         Err(e) => {
-            return Err(Error::Dialog(format!("{e}")));
+            return Err(Error::Dialog(e));
         }
     }
 }
 
 /// Ask user for speedrun settings
-fn ask_speedrun_settings_to_user(
+fn ask_speedrun_settings_to_user<'a>(
     game_name: Option<&str>,
     category_name: Option<&str>,
     split_names: Option<&str>,
     keybinding: UserKeybinding,
-) -> Result<SpeedrunSettings, SpeedrunSettingsFileError> {
+) -> Result<SpeedrunSettings, SpeedrunSettingsFileError<'a>> {
     // Continuously ask for non-empty game name
     let mut game_name: String = game_name.unwrap_or_default().to_string();
     while game_name.is_empty() {
@@ -631,23 +789,23 @@ fn ask_speedrun_settings_to_user(
     loop {
         let split_key = match keybinding.split_key {
             Some(k) => parse_key(k.to_string())?,
-            None => ask_user_keybinding("start/split", format!("{:?}", Numpad1Key).as_str())?,
+            None => ask_user_keybinding("start/split".to_string(), format!("{:?}", Numpad1Key))?,
         };
         let reset_key = match keybinding.reset_key {
             Some(k) => parse_key(k.to_string())?,
-            None => ask_user_keybinding("reset", format!("{:?}", Numpad3Key).as_str())?,
+            None => ask_user_keybinding("reset".to_string(), format!("{:?}", Numpad3Key))?,
         };
         let pause_key = match keybinding.pause_key {
             Some(k) => parse_key(k.to_string())?,
-            None => ask_user_keybinding("pause", format!("{:?}", Numpad7Key).as_str())?,
+            None => ask_user_keybinding("pause".to_string(), format!("{:?}", Numpad7Key))?,
         };
         let unpause_key = match keybinding.unpause_key {
             Some(k) => parse_key(k.to_string())?,
-            None => ask_user_keybinding("unpause", format!("{:?}", Numpad9Key).as_str())?,
+            None => ask_user_keybinding("unpause".to_string(), format!("{:?}", Numpad9Key))?,
         };
         let comparison_key = match keybinding.comparison_key {
             Some(k) => parse_key(k.to_string())?,
-            None => ask_user_keybinding("comparison", format!("{:?}", Numpad5Key).as_str())?,
+            None => ask_user_keybinding("comparison".to_string(), format!("{:?}", Numpad5Key))?,
         };
 
         let keys = vec![split_key, reset_key, pause_key, unpause_key];
@@ -662,11 +820,13 @@ fn ask_speedrun_settings_to_user(
 }
 
 /// Ask user keybinding for `key` while displaying `help`
-fn ask_user_keybinding(key_name: &str, example_keybind: &str) -> Result<KeybdKey, Error> {
-    let k = get_user_output(Input::new(format!(
-"Please provide the {key_name} key (example: \"{example_keybind}\", all possible values https://github.com/obv-mikhail/InputBot/blob/develop/src/public.rs):",
-            )).title(format!("Provide {key_name} key")))?;
-
+fn ask_user_keybinding<'a>(
+    key_name: String,
+    example_keybind: String,
+) -> Result<KeybdKey, Error<'a>> {
+    let description = format!("Please provide the {key_name} key (example: \"{example_keybind}\", all possible values https://github.com/obv-mikhail/InputBot/blob/develop/src/public.rs):");
+    let title = format!("Provide {key_name} key");
+    let k = get_user_output(Input::new(description).title(title))?;
     let k = parse_key(k)?;
     Ok(k)
 }
@@ -689,7 +849,7 @@ fn get_key_name(k: KeybdKey) -> String {
 pub fn update_configuration_with_default_speedrun(
     configuration: SpeedrunSplitsConfiguration,
     settings: &SpeedrunSettings,
-) -> Result<(), SpeedrunSplitsConfigurationFileError> {
+) -> Result<(), SSConfigurationFileError> {
     let game_name = settings.game_name.as_str();
     let category_name = settings.category_name.as_str();
     let choice = dialog::Question::new(format!("Make \"{game_name}: {category_name}\" default?"))
@@ -706,9 +866,9 @@ pub fn update_configuration_with_default_speedrun(
 }
 
 /// Save `configuration` to file
-fn save_config_to_file(
+fn save_config_to_file<'a>(
     configuration: &SpeedrunSplitsConfiguration,
-) -> Result<(), SpeedrunSplitsConfigurationFileError> {
+) -> Result<(), SSConfigurationFileError<'a>> {
     let mut file = File::create(default_config_path()?.as_str())?;
     let config_content = toml::to_string(&configuration)?;
     file.write_all(config_content.as_bytes())?;
@@ -731,7 +891,10 @@ pub fn save_speedrun_settings_to_file(
 }
 
 /// Save `run` to file that corresponds to speedrun `settings`
-pub fn save_run_to_file(run: &Run, settings: &SpeedrunSettings) -> Result<(), RunFileError> {
+pub fn save_run_to_file<'a>(
+    run: &Run,
+    settings: &SpeedrunSettings,
+) -> Result<(), RunFileError<'a>> {
     let default_data_folder = default_data_folder()?;
     let file_path = format!("{default_data_folder}/{}", settings.get_run_file_name());
     let file = File::create(file_path)?;

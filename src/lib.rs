@@ -1,3 +1,7 @@
+#![deny(missing_docs)]
+#![deny(rustdoc::invalid_codeblock_attributes)]
+#![warn(rustdoc::bare_urls)]
+#![deny(rustdoc::broken_intra_doc_links)]
 //! speedrun_splits is an application that lets you time your speedrun.
 //!
 //! IMPORTANT NOTICE: This crate is is not meant to replace the official livesplit client that might come to linux
@@ -15,6 +19,8 @@ use livesplit_core::TimerPhase::*;
 use log::{debug, error, info, warn};
 use persistence::SpeedrunSettings;
 use std::fmt;
+use std::fmt::Debug;
+use std::sync::PoisonError;
 use std::sync::{Arc, RwLock};
 use strum::IntoEnumIterator;
 
@@ -22,22 +28,31 @@ pub mod persistence;
 
 #[derive(Debug)]
 /// General errors that may happen while using speedrun_splits
-pub enum Error {
-    UI(String),
-    Timer(String),
+pub enum Error<'a> {
+    /// Unrecoverable error with the timer
+    TimerWriteLock(PoisonError<std::sync::RwLockWriteGuard<'a, livesplit_core::Timer>>),
+    /// Unrecoverable error with the timer
+    TimerReadLock(PoisonError<std::sync::RwLockReadGuard<'a, livesplit_core::Timer>>),
+    /// Unrecoverable error with the timer
+    SplitsReadLock(PoisonError<std::sync::RwLockReadGuard<'a, Splits>>),
+    /// Unrecoverable error with the splits display
+    SplitsWriteLock(PoisonError<std::sync::RwLockWriteGuard<'a, Splits>>),
+    /// Input from user is invalid
     UserInput(String),
+    /// Unrecoverable error such as division by zero
     Other(String),
 }
 
-impl fmt::Display for Error {
+impl fmt::Display for Error<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let msg: String = match self {
-            Error::UI(msg) => format!("UI: {msg}"),
-            Error::Timer(msg) => format!("Timer: {msg}"),
-            Error::UserInput(msg) => format!("User input: {msg}"),
-            Error::Other(msg) => format!("Other: {msg}"),
-        };
-        write!(f, "{msg}")
+        match self {
+            Error::TimerWriteLock(lock) => fmt::Display::fmt(lock, f),
+            Error::TimerReadLock(lock) => fmt::Display::fmt(lock, f),
+            Error::SplitsReadLock(lock) => fmt::Display::fmt(lock, f),
+            Error::SplitsWriteLock(lock) => fmt::Display::fmt(lock, f),
+            Error::UserInput(msg) => writeln!(f, "{msg}"),
+            Error::Other(msg) => writeln!(f, "Other: {msg}"),
+        }
     }
 }
 
@@ -79,6 +94,7 @@ pub struct Splits {
 }
 
 impl Keybinding {
+    /// Return Keybinding for speedrun_splits application
     pub fn new(
         split_key: KeybdKey,
         reset_key: KeybdKey,
@@ -97,6 +113,7 @@ impl Keybinding {
 }
 
 impl Speedrun {
+    /// Return Speedrun for speedrun_splits application
     pub fn new(
         name: String,
         timer: Arc<RwLock<Timer>>,
@@ -127,26 +144,18 @@ impl eframe::App for Speedrun {
     // NOTE: obtaining a write lock inside the update function does not work.
     //       The workaround is to bind a key to a callback function.
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        let splits = match self
-            .splits
-            .read()
-            .map_err(|e| Error::UI(format!("splits mutex error: {e}")))
-        {
+        let splits = match self.splits.read().map_err(Error::SplitsReadLock) {
             Ok(m) => m,
             Err(e) => {
                 error!("{e}");
-                panic!("{e}")
+                panic!("{e}") // cannot recover
             }
         };
-        let timer_readonly = match self
-            .timer
-            .read()
-            .map_err(|e| Error::UI(format!("timer mutex error: {e}")))
-        {
+        let timer_readonly = match self.timer.read().map_err(Error::TimerReadLock) {
             Ok(m) => m,
             Err(e) => {
                 error!("{e}");
-                panic!("{e}")
+                panic!("{e}") // cannot recover
             }
         };
         let current_time = match timer_readonly.snapshot().current_time().real_time {
@@ -223,6 +232,7 @@ impl eframe::App for Speedrun {
 }
 
 impl Splits {
+    /// create [Splits](Splits) items from `split_names`
     pub fn new(split_names: Vec<String>) -> Splits {
         let mut splits: Vec<Split> = Vec::new();
         for name in split_names.clone() {
@@ -310,7 +320,7 @@ impl Splits {
 }
 
 /// Formats `timespan` to "hh:mm:ss.ms"
-fn format_timespan(time: TimeSpan) -> Result<String, Error> {
+fn format_timespan<'a>(time: TimeSpan) -> Result<String, Error<'a>> {
     let d = time.to_duration();
     if d.is_negative() {
         return Err(Error::Other(
@@ -357,38 +367,27 @@ fn format_timesave(timespan: TimeSpan) -> String {
 
 /// Starts `timer`, logs keypress and update `splits` display
 pub fn start_or_split_timer(timer: Arc<RwLock<Timer>>, splits: Arc<RwLock<Splits>>) {
-    let message = match timer.read().map_err(|e| {
-        Error::Timer(format!(
-            "Error with timer mutex while displaying timer start message: {e}"
-        ))
-    }) {
+    let message = match timer.read().map_err(Error::TimerReadLock) {
         Ok(timer) => match timer.current_phase() {
             NotRunning => "Start/split keypress: start",
             _ => "",
         },
         Err(e) => {
             error!("{e}");
-            panic!("{e}")
+            panic!("{e}") // cannot recover
         }
     };
     if !message.is_empty() {
         info!("{message}");
     }
-    match timer
-        .write()
-        .map_err(|e| Error::Timer(format!("Error with timer mutex while splitting: {e}")))
-    {
+    match timer.write().map_err(Error::TimerWriteLock) {
         Ok(mut timer) => timer.split_or_start(),
         Err(e) => {
             error!("{e}");
-            panic!("{e}")
+            panic!("{e}") // cannot recover
         }
     }
-    match timer.read().map_err(|e| {
-        Error::Timer(format!(
-            "Error while capturing snapshot of run with timer mutex: {e}"
-        ))
-    }) {
+    match timer.read().map_err(Error::TimerReadLock) {
         Ok(timer) => {
             let snapshot = timer.snapshot();
             let segments = snapshot.run().segments();
@@ -399,14 +398,11 @@ pub fn start_or_split_timer(timer: Arc<RwLock<Timer>>, splits: Arc<RwLock<Splits
                     None => TimeSpan::default(),
                 };
                 debug!("{comparison:?}");
-                let mut splits_write = match splits
-                    .write()
-                    .map_err(|e| Error::Timer(format!("splits mutex error: {e}")))
-                {
+                let mut splits_write = match splits.write().map_err(Error::SplitsWriteLock) {
                     Ok(m) => m,
                     Err(e) => {
                         error!("{e}");
-                        panic!("{e}")
+                        panic!("{e}") // cannot recover
                     }
                 };
                 if let Some(time) = segment.split_time().real_time {
@@ -427,7 +423,7 @@ pub fn start_or_split_timer(timer: Arc<RwLock<Timer>>, splits: Arc<RwLock<Splits
         }
         Err(e) => {
             error!("{e}");
-            panic!("{e}")
+            panic!("{e}") // cannot recover
         }
     };
 }
@@ -435,27 +431,21 @@ pub fn start_or_split_timer(timer: Arc<RwLock<Timer>>, splits: Arc<RwLock<Splits
 /// Reset `timer` (which adds one attempt) and clear `splits` time display
 pub fn reset(timer: Arc<RwLock<Timer>>, splits: Arc<RwLock<Splits>>) {
     info!("Reset keypress");
-    let mut timer = match timer
-        .write()
-        .map_err(|e| Error::Timer(format!("timer mutex error: {e}")))
-    {
+    let mut timer = match timer.write().map_err(Error::TimerWriteLock) {
         Ok(m) => m,
         Err(e) => {
             error!("{e}");
-            panic!("{e}")
+            panic!("{e}") // cannot recover
         }
     };
     timer.reset(true);
 
     // clear display
-    let mut splits = match splits
-        .write()
-        .map_err(|e| Error::Timer(format!("splits mutex error: {e}")))
-    {
+    let mut splits = match splits.write().map_err(Error::SplitsWriteLock) {
         Ok(m) => m,
         Err(e) => {
             error!("{e}");
-            panic!("{e}")
+            panic!("{e}") // cannot recover
         }
     };
 
@@ -475,13 +465,13 @@ pub fn reset(timer: Arc<RwLock<Timer>>, splits: Arc<RwLock<Splits>>) {
 /// Pause `timer`
 pub fn pause(timer: Arc<RwLock<Timer>>) {
     info!("timer paused");
-    match timer.write() {
+    match timer.write().map_err(Error::TimerWriteLock) {
         Ok(mut timer) => {
             timer.pause();
         }
         Err(e) => {
             error!("{e}");
-            panic!("{e}")
+            panic!("{e}") // cannot recover
         }
     }
 }
@@ -491,13 +481,13 @@ pub fn pause(timer: Arc<RwLock<Timer>>) {
 /// Uses the resume method of the timer
 pub fn unpause(timer: Arc<RwLock<Timer>>) {
     info!("timer resumed");
-    match timer.write() {
+    match timer.write().map_err(Error::TimerWriteLock) {
         Ok(mut timer) => {
             timer.resume();
         }
         Err(e) => {
             error!("{e}");
-            panic!("{e}")
+            panic!("{e}") // cannot recover
         }
     }
 }
@@ -505,11 +495,11 @@ pub fn unpause(timer: Arc<RwLock<Timer>>) {
 /// Switch to next comparison
 pub fn switch_comparison(timer: Arc<RwLock<Timer>>, splits: Arc<RwLock<Splits>>) {
     info!("Switching comparison");
-    let mut timer = match timer.write() {
+    let mut timer = match timer.write().map_err(Error::TimerWriteLock) {
         Ok(timer) => timer,
         Err(e) => {
             error!("{e}");
-            panic!("{e}")
+            panic!("{e}") // cannot recover
         }
     };
     timer.switch_to_next_comparison();
@@ -522,14 +512,11 @@ pub fn switch_comparison(timer: Arc<RwLock<Timer>>, splits: Arc<RwLock<Splits>>)
             Some(ts) => ts,
             None => TimeSpan::default(),
         };
-        let mut splits_write = match splits
-            .write()
-            .map_err(|e| Error::Timer(format!("splits mutex error: {e}")))
-        {
+        let mut splits_write = match splits.write().map_err(Error::SplitsWriteLock) {
             Ok(m) => m,
             Err(e) => {
                 error!("{e}");
-                panic!("{e}")
+                panic!("{e}") // cannot recover
             }
         };
         splits_write.refresh_splits(i, comparison);
@@ -537,7 +524,7 @@ pub fn switch_comparison(timer: Arc<RwLock<Timer>>, splits: Arc<RwLock<Splits>>)
 }
 
 /// Parse `key`
-pub fn parse_key(key: String) -> Result<KeybdKey, Error> {
+pub fn parse_key<'a>(key: String) -> Result<KeybdKey, Error<'a>> {
     KeybdKey::iter()
         .find(|k| format!("{:?}", k) == key)
         .ok_or(format!("Could not parse user key \"{key}\""))

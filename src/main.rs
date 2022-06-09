@@ -185,7 +185,7 @@ to \"input\" group (group owner of eventXXX (`ls -la /dev/input/`))
     };
 
     if is_new {
-        if let Err(e) = update_configuration_with_default_speedrun(config, &settings) {
+        if let Err(e) = update_configuration_with_default_speedrun(config.clone(), &settings) {
             error!("{e}");
             // TODO user facing message
             return std::process::ExitCode::FAILURE;
@@ -198,15 +198,15 @@ to \"input\" group (group owner of eventXXX (`ls -la /dev/input/`))
     }
 
     let splits: Arc<RwLock<Splits>> =
-        Arc::new(RwLock::new(Splits::new(settings.split_names.clone())));
+        Arc::new(RwLock::new(Splits::new(settings.get_split_names())));
     let splits_ref1: Arc<RwLock<Splits>> = splits.clone();
     let splits_ref2: Arc<RwLock<Splits>> = splits.clone();
     let splits_ref3: Arc<RwLock<Splits>> = splits.clone();
 
     let mut run = Run::new();
-    run.set_game_name(&settings.game_name);
-    run.set_category_name(&settings.category_name);
-    for name in &settings.split_names {
+    run.set_game_name(&settings.get_game_name());
+    run.set_category_name(&settings.get_category_name());
+    for name in &settings.get_split_names() {
         run.push_segment(Segment::new(name));
     }
 
@@ -255,7 +255,7 @@ to \"input\" group (group owner of eventXXX (`ls -la /dev/input/`))
     let t4 = t.clone();
     let t5 = t.clone();
 
-    let split_key = match parse_key(settings.split_key.clone()) {
+    let split_key = match parse_key(settings.get_split_key()) {
         Ok(k) => k,
         Err(e) => {
             error!("{e}");
@@ -265,7 +265,7 @@ to \"input\" group (group owner of eventXXX (`ls -la /dev/input/`))
     info!("split key: {split_key:?}");
     split_key.bind(move || start_or_split_timer(t1.clone(), splits_ref1.clone()));
 
-    let reset_key = match parse_key(settings.reset_key.clone()) {
+    let reset_key = match parse_key(settings.get_reset_key()) {
         Ok(k) => k,
         Err(e) => {
             error!("{e}");
@@ -275,7 +275,7 @@ to \"input\" group (group owner of eventXXX (`ls -la /dev/input/`))
     info!("reset key: {reset_key:?}");
     reset_key.bind(move || reset(t2.clone(), splits_ref2.clone()));
 
-    let pause_key = match parse_key(settings.pause_key.clone()) {
+    let pause_key = match parse_key(settings.get_pause_key()) {
         Ok(k) => k,
         Err(e) => {
             error!("{e}");
@@ -285,7 +285,7 @@ to \"input\" group (group owner of eventXXX (`ls -la /dev/input/`))
     info!("pause key: {pause_key:?}");
     pause_key.bind(move || pause(t3.clone()));
 
-    let unpause_key = match parse_key(settings.unpause_key.clone()) {
+    let unpause_key = match parse_key(settings.get_unpause_key()) {
         Ok(k) => k,
         Err(e) => {
             error!("{e}");
@@ -295,7 +295,7 @@ to \"input\" group (group owner of eventXXX (`ls -la /dev/input/`))
     info!("unpause key: {unpause_key:?}");
     unpause_key.bind(move || unpause(t4.clone()));
 
-    let comparison_key = match parse_key(settings.comparison_key.clone()) {
+    let comparison_key = match parse_key(settings.get_comparison_key()) {
         Ok(k) => k,
         Err(e) => {
             error!("{e}");
