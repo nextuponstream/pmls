@@ -2,7 +2,9 @@ use clap::{crate_authors, crate_name, crate_version, Arg, Command};
 use livesplit_core::{Run, Segment, TimeSpan, Timer};
 use log::*;
 use simplelog::{Config, WriteLogger};
-use speedrun_splits::{parse_key, pause, reset, start_or_split_timer, unpause, Speedrun, Splits};
+use speedrun_splits::{
+    parse_key, pause, reset, start_or_split_timer, switch_comparison, unpause, Speedrun, Splits,
+};
 use speedrun_splits::{persistence::*, Keybinding as lKeybinding};
 use std::fs;
 use std::process::ExitCode;
@@ -72,6 +74,14 @@ fn main() -> ExitCode {
                 .help("Assign unpause key (possible values: https://github.com/obv-mikhail/InputBot/blob/develop/src/public.rs)")
                 .takes_value(true)
                 .value_name("UNPAUSE KEY"),
+            )
+        .arg(
+            Arg::new("comparison-key")
+                .short('c')
+                .long("comparison-key")
+                .help("Assign comparison key to switch between standard comparisons (possible values: https://github.com/obv-mikhail/InputBot/blob/develop/src/public.rs)")
+                .takes_value(true)
+                .value_name("COMPARISON KEY"),
             )
         .after_help(
             "This command requires privilege over one keyboard device. It is \
@@ -151,6 +161,7 @@ to \"input\" group (group owner of eventXXX (`ls -la /dev/input/`))
     let reset_key = m.value_of("reset-key");
     let pause_key = m.value_of("pause-key");
     let unpause_key = m.value_of("unpause-key");
+    let comparison_key = m.value_of("comparison-key");
 
     let config = match parse_configuration() {
         Ok(c) => c,
@@ -160,7 +171,8 @@ to \"input\" group (group owner of eventXXX (`ls -la /dev/input/`))
             return std::process::ExitCode::FAILURE;
         }
     };
-    let keybinding = UserKeybinding::new(split_key, reset_key, pause_key, unpause_key);
+    let keybinding =
+        UserKeybinding::new(split_key, reset_key, pause_key, unpause_key, comparison_key);
     let (settings, is_new) =
         load_speedrun_settings(&config, game, category, split_names, keybinding);
     let settings = match settings {
@@ -189,6 +201,7 @@ to \"input\" group (group owner of eventXXX (`ls -la /dev/input/`))
         Arc::new(RwLock::new(Splits::new(settings.split_names.clone())));
     let splits_ref1: Arc<RwLock<Splits>> = splits.clone();
     let splits_ref2: Arc<RwLock<Splits>> = splits.clone();
+    let splits_ref3: Arc<RwLock<Splits>> = splits.clone();
 
     let mut run = Run::new();
     run.set_game_name(&settings.game_name);
@@ -240,6 +253,7 @@ to \"input\" group (group owner of eventXXX (`ls -la /dev/input/`))
     let t2 = t.clone();
     let t3 = t.clone();
     let t4 = t.clone();
+    let t5 = t.clone();
 
     let split_key = match parse_key(settings.split_key.clone()) {
         Ok(k) => k,
@@ -281,6 +295,16 @@ to \"input\" group (group owner of eventXXX (`ls -la /dev/input/`))
     info!("unpause key: {unpause_key:?}");
     unpause_key.bind(move || unpause(t4.clone()));
 
+    let comparison_key = match parse_key(settings.comparison_key.clone()) {
+        Ok(k) => k,
+        Err(e) => {
+            error!("{e}");
+            return std::process::ExitCode::FAILURE;
+        }
+    };
+    info!("comparison key: {comparison_key:?}");
+    comparison_key.bind(move || switch_comparison(t5.clone(), splits_ref3.clone()));
+
     // blocking statement can be handled by spawning its own thread
     thread::spawn(move || {
         inputbot::handle_input_events();
@@ -296,7 +320,7 @@ to \"input\" group (group owner of eventXXX (`ls -la /dev/input/`))
     //});
 
     let options = eframe::NativeOptions::default();
-    let keybinding = lKeybinding::new(split_key, reset_key, pause_key, unpause_key);
+    let keybinding = lKeybinding::new(split_key, reset_key, pause_key, unpause_key, comparison_key);
     let app = Speedrun::new(
         "Poor man's LiveSplit".to_owned(),
         t,

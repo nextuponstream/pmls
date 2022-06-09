@@ -5,11 +5,11 @@
 //! * general configuration (`$HOME/.config/.speedrun_splits`)
 //! * log file
 
-use crate::parse_key;
 use crate::Error as lError;
+use crate::{parse_key, Keybinding};
 use dialog::{DialogBox, Input};
 use inputbot::KeybdKey;
-use inputbot::KeybdKey::{Numpad1Key, Numpad3Key, Numpad7Key, Numpad9Key};
+use inputbot::KeybdKey::{Numpad1Key, Numpad3Key, Numpad5Key, Numpad7Key, Numpad9Key};
 use itertools::Itertools;
 use livesplit_core::run::parser::composite;
 use livesplit_core::run::saver::livesplit;
@@ -45,6 +45,7 @@ pub struct SpeedrunSettings {
     pub reset_key: String,
     pub pause_key: String,
     pub unpause_key: String,
+    pub comparison_key: String,
 }
 
 /// Keybinding provided by the user
@@ -53,6 +54,7 @@ pub struct UserKeybinding<'a> {
     reset_key: Option<&'a str>,
     pause_key: Option<&'a str>,
     unpause_key: Option<&'a str>,
+    comparison_key: Option<&'a str>,
 }
 
 #[derive(Debug, Eq, PartialEq, Hash)]
@@ -96,29 +98,29 @@ impl SpeedrunSettings {
         split_names: Vec<String>,
         game_name: String,
         category_name: String,
-        split_key: KeybdKey,
-        reset_key: KeybdKey,
-        pause_key: KeybdKey,
-        unpause_key: KeybdKey,
+        keybinding: Keybinding,
     ) -> Result<SpeedrunSettings, SpeedrunSettingsFileError> {
-        let keys = vec![split_key, reset_key, pause_key, unpause_key];
+        let keys = vec![
+            keybinding.split_key,
+            keybinding.reset_key,
+            keybinding.pause_key,
+            keybinding.unpause_key,
+        ];
         if !keys.iter().all_unique() {
             return Err(SpeedrunSettingsFileError::User(
                 "All keys need to be bound to a different key".to_string(),
             ));
         }
 
-        let keys = vec![split_key, reset_key];
-        if keys.iter().all_unique() {}
-
         Ok(SpeedrunSettings {
             split_names,
             game_name,
             category_name,
-            split_key: get_key_name(split_key),
-            reset_key: get_key_name(reset_key),
-            pause_key: get_key_name(pause_key),
-            unpause_key: get_key_name(unpause_key),
+            split_key: get_key_name(keybinding.split_key),
+            reset_key: get_key_name(keybinding.reset_key),
+            pause_key: get_key_name(keybinding.pause_key),
+            unpause_key: get_key_name(keybinding.unpause_key),
+            comparison_key: get_key_name(keybinding.comparison_key),
         })
     }
 }
@@ -348,12 +350,14 @@ impl<'a> UserKeybinding<'_> {
         reset_key: Option<&'a str>,
         pause_key: Option<&'a str>,
         unpause_key: Option<&'a str>,
+        comparison_key: Option<&'a str>,
     ) -> UserKeybinding<'a> {
         UserKeybinding {
             split_key,
             reset_key,
             pause_key,
             unpause_key,
+            comparison_key,
         }
     }
 }
@@ -492,6 +496,7 @@ pub fn load_speedrun_settings(
                 reset_key: String::new(),
                 pause_key: String::new(),
                 unpause_key: String::new(),
+                comparison_key: String::new(),
             };
             return (
                 find_speedrun_by_name(settings.get_file_name(), configuration),
@@ -640,19 +645,16 @@ fn ask_speedrun_settings_to_user(
             Some(k) => parse_key(k.to_string())?,
             None => ask_user_keybinding("unpause", format!("{:?}", Numpad9Key).as_str())?,
         };
+        let comparison_key = match keybinding.comparison_key {
+            Some(k) => parse_key(k.to_string())?,
+            None => ask_user_keybinding("comparison", format!("{:?}", Numpad5Key).as_str())?,
+        };
 
         let keys = vec![split_key, reset_key, pause_key, unpause_key];
-
         if keys.iter().all_unique() {
-            return SpeedrunSettings::new(
-                split_names,
-                game_name,
-                category_name,
-                split_key,
-                reset_key,
-                pause_key,
-                unpause_key,
-            );
+            let keybinding =
+                Keybinding::new(split_key, reset_key, pause_key, unpause_key, comparison_key);
+            return SpeedrunSettings::new(split_names, game_name, category_name, keybinding);
         } else {
             warn!("No two keybinds can be the same. Retrying...")
         }

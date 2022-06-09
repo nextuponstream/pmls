@@ -50,6 +50,7 @@ pub struct Speedrun {
     reset_key: String,
     pause_key: String,
     unpause_key: String,
+    comparison_key: String,
     settings: SpeedrunSettings,
 }
 
@@ -59,6 +60,7 @@ pub struct Keybinding {
     reset_key: KeybdKey,
     pause_key: KeybdKey,
     unpause_key: KeybdKey,
+    comparison_key: KeybdKey,
 }
 
 #[derive(Default)]
@@ -82,12 +84,14 @@ impl Keybinding {
         reset_key: KeybdKey,
         pause_key: KeybdKey,
         unpause_key: KeybdKey,
+        switch_comparison: KeybdKey,
     ) -> Keybinding {
         Keybinding {
             split_key,
             reset_key,
             pause_key,
             unpause_key,
+            comparison_key: switch_comparison,
         }
     }
 }
@@ -108,6 +112,7 @@ impl Speedrun {
             reset_key: format!("{:?}", keybinding.reset_key),
             pause_key: format!("{:?}", keybinding.pause_key),
             unpause_key: format!("{:?}", keybinding.unpause_key),
+            comparison_key: format!("{:?}", keybinding.comparison_key),
             settings,
         }
     }
@@ -119,6 +124,8 @@ impl Speedrun {
 }
 
 impl eframe::App for Speedrun {
+    // NOTE: obtaining a write lock inside the update function does not work.
+    //       The workaround is to bind a key to a callback function.
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         let splits = match self
             .splits
@@ -189,10 +196,11 @@ impl eframe::App for Speedrun {
                 ui.monospace(current_time);
             });
             ui.monospace("");
-            ui.monospace(format!("Start/split: {}", self.split_key));
-            ui.monospace(format!("Reset      : {}", self.reset_key));
-            ui.monospace(format!("Pause      : {}", self.pause_key));
-            ui.monospace(format!("Unpause    : {}", self.unpause_key));
+            ui.monospace(format!("Start/split      : {}", self.split_key));
+            ui.monospace(format!("Reset            : {}", self.reset_key));
+            ui.monospace(format!("Pause            : {}", self.pause_key));
+            ui.monospace(format!("Unpause          : {}", self.unpause_key));
+            ui.monospace(format!("Switch comparison: {}", self.comparison_key));
             ui.monospace("");
             ui.monospace("Note: attempts are saved when closing the application");
             ui.monospace("Note2: reset the timer for this attempt times to be stored in the run history when you close this application.");
@@ -290,6 +298,14 @@ impl Splits {
     /// Returns the number of splits
     fn len(&self) -> usize {
         self.splits.len()
+    }
+
+    /// Refresh splits display (called right after switching comparison)
+    pub fn refresh_splits(&mut self, i: usize, comparison: TimeSpan) {
+        self.splits[i].comparison = comparison;
+        if self.splits[i].time > TimeSpan::zero() {
+            self.splits[i].time_difference = self.splits[i].time - self.splits[i].comparison;
+        }
     }
 }
 
@@ -483,6 +499,40 @@ pub fn unpause(timer: Arc<RwLock<Timer>>) {
             error!("{e}");
             panic!("{e}")
         }
+    }
+}
+
+/// Switch to next comparison
+pub fn switch_comparison(timer: Arc<RwLock<Timer>>, splits: Arc<RwLock<Splits>>) {
+    info!("Switching comparison");
+    let mut timer = match timer.write() {
+        Ok(timer) => timer,
+        Err(e) => {
+            error!("{e}");
+            panic!("{e}")
+        }
+    };
+    timer.switch_to_next_comparison();
+
+    let snapshot = timer.snapshot();
+    let segments = snapshot.run().segments();
+    for (i, segment) in segments.iter().enumerate() {
+        let comparison = timer.current_comparison();
+        let comparison = match segment.comparison(comparison).real_time {
+            Some(ts) => ts,
+            None => TimeSpan::default(),
+        };
+        let mut splits_write = match splits
+            .write()
+            .map_err(|e| Error::Timer(format!("splits mutex error: {e}")))
+        {
+            Ok(m) => m,
+            Err(e) => {
+                error!("{e}");
+                panic!("{e}")
+            }
+        };
+        splits_write.refresh_splits(i, comparison);
     }
 }
 
