@@ -12,6 +12,7 @@
 
 use eframe::egui;
 use eframe::Storage;
+use egui_extras::RetainedImage;
 use livesplit_core::hotkey::KeyCode;
 use livesplit_core::TimeSpan;
 use livesplit_core::Timer;
@@ -21,8 +22,7 @@ use persistence::SpeedrunSettings;
 use serde::{Deserialize, Serialize};
 use std::fmt;
 use std::fmt::Debug;
-use std::sync::PoisonError;
-use std::sync::{Arc, RwLock};
+use std::sync::{Arc, PoisonError, RwLock, RwLockReadGuard, RwLockWriteGuard};
 
 pub mod persistence;
 
@@ -30,13 +30,13 @@ pub mod persistence;
 /// General errors that may happen while using speedrun_splits
 pub enum Error<'a> {
     /// Unrecoverable error with the timer
-    TimerWriteLock(PoisonError<std::sync::RwLockWriteGuard<'a, livesplit_core::Timer>>),
+    TimerWriteLock(PoisonError<RwLockWriteGuard<'a, livesplit_core::Timer>>),
     /// Unrecoverable error with the timer
-    TimerReadLock(PoisonError<std::sync::RwLockReadGuard<'a, livesplit_core::Timer>>),
+    TimerReadLock(PoisonError<RwLockReadGuard<'a, livesplit_core::Timer>>),
     /// Unrecoverable error with the timer
-    SplitsReadLock(PoisonError<std::sync::RwLockReadGuard<'a, Splits>>),
+    SplitsReadLock(PoisonError<RwLockReadGuard<'a, Splits>>),
     /// Unrecoverable error with the splits display
-    SplitsWriteLock(PoisonError<std::sync::RwLockWriteGuard<'a, Splits>>),
+    SplitsWriteLock(PoisonError<RwLockWriteGuard<'a, Splits>>),
     /// Input from user is invalid
     UserInput(String),
     /// Unrecoverable error such as division by zero
@@ -46,6 +46,18 @@ pub enum Error<'a> {
 impl From<()> for Error<'_> {
     fn from(_: ()) -> Self {
         Error::Other("Could not convert key".to_string())
+    }
+}
+
+impl<'a> From<std::string::String> for Error<'a> {
+    fn from(e: std::string::String) -> Self {
+        Error::Other(e)
+    }
+}
+
+impl<'a> From<PoisonError<RwLockReadGuard<'a, livesplit_core::Timer>>> for Error<'a> {
+    fn from(e: PoisonError<RwLockReadGuard<'a, livesplit_core::Timer>>) -> Self {
+        Error::TimerReadLock(e)
     }
 }
 
@@ -73,6 +85,7 @@ pub struct Speedrun {
     unpause_key: String,
     comparison_key: String,
     settings: SpeedrunSettings,
+    icons: Vec<RetainedImage>,
 }
 
 /// Effective keybindings in use for speedrun
@@ -138,12 +151,31 @@ impl Speedrun {
             unpause_key: format!("{:?}", keybinding.unpause_key),
             comparison_key: format!("{:?}", keybinding.comparison_key),
             settings,
+            icons: vec![],
         }
     }
 
     /// Get name of speedrun application (window title)
     pub fn get_name(&self) -> String {
         self.name.clone()
+    }
+
+    /// Load speedrun icons if present
+    ///
+    /// NOTE: loading image images in update loop is costly for the CPU.
+    ///       Loading in init function makes cpu cost go from 30% -> 5% (top)
+    pub fn init(&mut self) -> Result<(), Error> {
+        info!("preloading speedrun icons...");
+        let timer = self.timer.read()?;
+        for segment in timer.run().segments() {
+            let img_data = segment.icon().data();
+            if !img_data.is_empty() {
+                let image = RetainedImage::from_image_bytes(segment.name(), img_data)?;
+                self.icons.push(image);
+            }
+        }
+
+        Ok(())
     }
 }
 
@@ -194,13 +226,21 @@ impl eframe::App for Speedrun {
             ui.monospace(format!("Attempts: {attempts_count}"));
 
             ui.horizontal(|ui| {
+                let image_padding = run_has_icon(run);
                 ui.monospace(format!(
-                    "{:<padding$}: Current time {:<13} Time difference",
-                    "Splits", comparison_name
+                    "{}{:<padding$}: Current time {:<13} Time difference",
+                    image_padding, "Splits", comparison_name
                 ));
             });
             for i in 0..splits.len() {
                 ui.horizontal(|ui| {
+                    // example: https://github.com/emilk/egui/blob/0.17.0/eframe/examples/image.rs
+                    if let Some(img) = self.icons.get(i) {
+                        // 27 pixels is ~= 5 whitespaces
+                        let dimensions = egui::Vec2::new(27f32,27f32);
+                        //ui.image(image.texture_id(ctx), image.size_vec2());
+                        ui.image(img.texture_id(ctx), dimensions);
+                    }
                     ui.monospace(format!("{:<padding$}:", splits.get_split_name(i)));
                     ui.monospace(splits.get_time(i).unwrap());
                     ui.monospace(splits.get_comparison(i).unwrap());
@@ -208,7 +248,8 @@ impl eframe::App for Speedrun {
                 });
             }
             ui.horizontal(|ui| {
-                ui.monospace(format!("{:<padding$}:", "Time"));
+                let image_padding = run_has_icon(run);
+                ui.monospace(format!("{}{:<padding$}:", image_padding, "Time"));
                 ui.monospace(current_time);
             });
             ui.monospace("");
@@ -533,4 +574,14 @@ pub fn switch_comparison(timer: Arc<RwLock<Timer>>, splits: Arc<RwLock<Splits>>)
 /// Parse `key`
 pub fn parse_key<'a>(key: String) -> Result<KeyCode, Error<'a>> {
     Ok(key.parse::<KeyCode>()?)
+}
+
+/// Returns true if splits have icons to display
+fn run_has_icon(run: &livesplit_core::Run) -> &str {
+    let img_data = run.segment(0).icon().data();
+    if img_data.is_empty() {
+        ""
+    } else {
+        "     "
+    }
 }

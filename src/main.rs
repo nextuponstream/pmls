@@ -19,18 +19,18 @@ fn main() -> ExitCode {
         .arg(
             Arg::new("game")
                 .requires("category")
-                .short('g')
                 .long("game")
-                .help("The game name when loading speedrun (\"{game}_{category}\" is the file name searched in data folder)")
+                .long_help("The game name when loading speedrun (\"GAME_CATEGORY\" is the file name searched in data folder)
+When used with --force-speedrun-settings-creation, provides the name of the game.")
                 .takes_value(true)
                 .value_name("GAME"),
         )
         .arg(
             Arg::new("category")
                 .requires("game")
-                .short('c')
                 .long("category")
-                .help("The game category name when loading speedrun (\"{game}_{category}\" is the file name searched in data folder)")
+                .long_help("The game category name when loading speedrun (\"GAME_CATEGORY\" is the file name searched in data folder)
+When used with --force-speedrun-settings-creation, provides the category name of the game.")
                 .takes_value(true)
                 .value_name("CATEGORY"),
         )
@@ -82,6 +82,30 @@ fn main() -> ExitCode {
                 .help("Assign comparison key to switch between standard comparisons (possible values: https://github.com/LiveSplit/livesplit-core/blob/master/crates/livesplit-hotkey/src/key_code.rs)")
                 .takes_value(true)
                 .value_name("COMPARISON KEY"),
+            )
+        .arg(
+            Arg::new("icons")
+                .short('i')
+                .long("icons")
+                .help("Give icon filepath for speedrun creation")
+                .takes_value(true)
+                .multiple_values(true)
+                .value_name("ICON FILEPATH"),
+            )
+        .arg(
+            Arg::new("accept-automatically-configuration-creation")
+                .long("accept-automatically-configuration-creation")
+                .help("Create configuration for speedrun_splits app and skip dialog")
+            )
+        .arg(
+            Arg::new("force-speedrun-settings-creation")
+                .long("force-speedrun-settings-creation")
+                .help("Avoid behavior where program defaults to finding speedrun by name.")
+            )
+        .arg(
+            Arg::new("make-speedrun-default")
+                .long("make-speedrun-default")
+                .help("Make created speedrun default")
             )
         .after_help(
             "This command requires privilege over one keyboard device. It is \
@@ -162,8 +186,13 @@ to \"input\" group (group owner of eventXXX (`ls -la /dev/input/`))
     let pause_key = m.value_of("pause-key");
     let unpause_key = m.value_of("unpause-key");
     let comparison_key = m.value_of("comparison-key");
+    let icons = m.values_of("icons");
+    let accept_speedrun_splits_configuration_creating_dialog =
+        m.is_present("accept-automatically-configuration-creation");
+    let force_ss_creation = m.is_present("force-speedrun-settings-creation");
+    let make_speedrun_default = m.is_present("make-speedrun-default");
 
-    let config = match parse_configuration() {
+    let config = match parse_configuration(accept_speedrun_splits_configuration_creating_dialog) {
         Ok(c) => c,
         Err(e) => {
             error!("{e}");
@@ -173,19 +202,34 @@ to \"input\" group (group owner of eventXXX (`ls -la /dev/input/`))
     };
     let keybinding =
         UserKeybinding::new(split_key, reset_key, pause_key, unpause_key, comparison_key);
-    let (settings, is_new) =
-        load_speedrun_settings(&config, game, category, split_names, keybinding);
-    let settings = match settings {
-        Ok(s) => s,
-        Err(e) => {
-            error!("{e}");
-            // TODO user facing message
-            return std::process::ExitCode::FAILURE;
-        }
+    let (settings, image_names, is_new) = match load_speedrun_settings(
+        &config,
+        game,
+        category,
+        split_names,
+        keybinding,
+        icons,
+        force_ss_creation,
+    ) {
+        Ok((ss, n, is_new)) => (ss, n, is_new),
+        Err(e) => match e {
+            SpeedrunSettingsFileError::UserCancel() => {
+                info!("{e}");
+                return std::process::ExitCode::SUCCESS;
+            }
+            _ => {
+                error!("{e}");
+                debug!("{e:?}");
+                // TODO user facing message
+                return std::process::ExitCode::FAILURE;
+            }
+        },
     };
 
     if is_new {
-        if let Err(e) = update_configuration_with_default_speedrun(config.clone(), &settings) {
+        if let Err(e) =
+            update_configuration_with_default_speedrun(config, &settings, make_speedrun_default)
+        {
             error!("{e}");
             // TODO user facing message
             return std::process::ExitCode::FAILURE;
@@ -206,8 +250,23 @@ to \"input\" group (group owner of eventXXX (`ls -la /dev/input/`))
     let mut run = Run::new();
     run.set_game_name(&settings.get_game_name());
     run.set_category_name(&settings.get_category_name());
-    for name in &settings.get_split_names() {
-        run.push_segment(Segment::new(name));
+    for (i, name) in settings.get_split_names().iter().enumerate() {
+        let mut s = Segment::new(name);
+        if let Some(names) = image_names.clone() {
+            if let Some(path) = names.get(i) {
+                let img = vec![];
+                let image = match livesplit_core::settings::Image::from_file(path, img) {
+                    Ok(i) => i,
+                    Err(e) => {
+                        error!("{e}");
+                        // TODO user facing message
+                        return std::process::ExitCode::FAILURE;
+                    }
+                };
+                s.set_icon(image);
+            }
+        }
+        run.push_segment(s);
     }
 
     // save run and initialize current comparison
@@ -306,13 +365,18 @@ to \"input\" group (group owner of eventXXX (`ls -la /dev/input/`))
 
     let options = eframe::NativeOptions::default();
     let keybinding = lKeybinding::new(split_key, reset_key, pause_key, unpause_key, comparison_key);
-    let app = Speedrun::new(
+    let mut app = Speedrun::new(
         "Poor man's LiveSplit".to_owned(),
         t,
         splits,
         keybinding,
         settings,
     );
+    if let Err(e) = app.init() {
+        error!("{e}");
+        // TODO user facing message
+        return std::process::ExitCode::FAILURE;
+    }
 
     // also blocking
     eframe::run_native(

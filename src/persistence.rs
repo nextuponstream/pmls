@@ -7,6 +7,7 @@
 
 use crate::{parse_key, Keybinding};
 use crate::{Error as lError, Splits};
+use clap::Values;
 use dialog::{DialogBox, Input};
 use itertools::Itertools;
 use livesplit_core::hotkey::KeyCode;
@@ -60,6 +61,8 @@ pub struct UserKeybinding<'a> {
 pub enum Error<'a> {
     /// Input from user is invalid
     UserInput(String),
+    /// User did not provide asked input
+    UserCancel(),
     /// Error with the user environment variables
     VarError(VarError),
     /// User cannot interact with dialog box
@@ -82,6 +85,8 @@ pub enum Error<'a> {
 pub enum SSConfigurationFileError<'a> {
     /// Input from user is invalid
     UserInput(String),
+    /// User did not provide asked input
+    UserCancel(),
     /// Error with the user environment variables
     VarError(VarError),
     /// User cannot interact with dialog box
@@ -107,9 +112,12 @@ pub enum SSConfigurationFileError<'a> {
 }
 
 /// Errors while using the settings file of a speedrun
+#[derive(Debug)]
 pub enum SpeedrunSettingsFileError<'a> {
     /// Input from user is invalid
     UserInput(String),
+    /// User did not provide asked input
+    UserCancel(),
     /// Serialization to toml format error
     Serialize(toml::ser::Error),
     /// Deserialization from toml format error
@@ -138,6 +146,8 @@ pub enum SpeedrunSettingsFileError<'a> {
 pub enum RunFileError<'a> {
     /// Input from user is invalid
     UserInput(String),
+    /// User did not provide asked input
+    UserCancel(),
     /// Cannot save `.lss` file
     Save(livesplit_core::run::saver::livesplit::Error),
     /// Cannot parse `.lss` file
@@ -201,6 +211,9 @@ impl<'a> fmt::Display for SSConfigurationFileError<'a> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             SSConfigurationFileError::UserInput(msg) => writeln!(f, "{msg}"),
+            SSConfigurationFileError::UserCancel() => {
+                writeln!(f, "User cancelled action while editing speedrun settings")
+            }
             SSConfigurationFileError::Dialog(de) => fmt::Display::fmt(de, f),
             SSConfigurationFileError::IO(ioe) => fmt::Display::fmt(ioe, f),
             SSConfigurationFileError::DataFolder(wde) => fmt::Display::fmt(wde, f),
@@ -253,6 +266,12 @@ impl<'a> From<dialog::Error> for SSConfigurationFileError<'a> {
     }
 }
 
+impl<'a> From<dialog::Error> for SpeedrunSettingsFileError<'a> {
+    fn from(e: dialog::Error) -> Self {
+        SpeedrunSettingsFileError::Dialog(e)
+    }
+}
+
 impl<'a> From<std::io::Error> for RunFileError<'a> {
     fn from(e: std::io::Error) -> Self {
         RunFileError::IO(e)
@@ -263,6 +282,7 @@ impl<'a> From<Error<'a>> for RunFileError<'a> {
     fn from(e: Error<'a>) -> Self {
         match e {
             Error::UserInput(msg) => RunFileError::UserInput(msg),
+            Error::UserCancel() => RunFileError::UserCancel(),
             Error::VarError(ve) => RunFileError::VarError(ve),
             Error::Dialog(de) => RunFileError::Dialog(de),
             Error::IO(io) => RunFileError::IO(io),
@@ -297,6 +317,7 @@ impl<'a> From<Error<'a>> for SSConfigurationFileError<'a> {
     fn from(e: Error<'a>) -> Self {
         match e {
             Error::UserInput(msg) => SSConfigurationFileError::UserInput(msg),
+            Error::UserCancel() => SSConfigurationFileError::UserCancel(),
             Error::Dialog(de) => SSConfigurationFileError::Dialog(de),
             Error::IO(io) => SSConfigurationFileError::IO(io),
             Error::VarError(ve) => SSConfigurationFileError::VarError(ve),
@@ -379,6 +400,7 @@ impl<'a> From<Error<'a>> for SpeedrunSettingsFileError<'a> {
         match e {
             Error::Dialog(de) => SpeedrunSettingsFileError::Dialog(de),
             Error::UserInput(msg) => SpeedrunSettingsFileError::UserInput(msg),
+            Error::UserCancel() => SpeedrunSettingsFileError::UserCancel(),
             Error::IO(io) => SpeedrunSettingsFileError::IO(io),
             Error::VarError(ve) => SpeedrunSettingsFileError::VarError(ve),
             Error::TimerReadLock(lock) => SpeedrunSettingsFileError::TimerReadLock(lock),
@@ -400,6 +422,10 @@ impl<'a> fmt::Display for SpeedrunSettingsFileError<'a> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             SpeedrunSettingsFileError::UserInput(msg) => writeln!(f, "{msg}"),
+            SpeedrunSettingsFileError::UserCancel() => writeln!(
+                f,
+                "User cancelled action while editing speedrun settings file"
+            ),
             SpeedrunSettingsFileError::OSStringConversion(msg) => writeln!(f, "{msg}"),
             SpeedrunSettingsFileError::VarError(ve) => fmt::Display::fmt(ve, f),
             SpeedrunSettingsFileError::Dialog(de) => fmt::Display::fmt(de, f),
@@ -419,6 +445,10 @@ impl<'a> fmt::Display for RunFileError<'a> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             RunFileError::UserInput(msg) => writeln!(f, "{msg}"),
+            // NOTE: should be unreachable
+            RunFileError::UserCancel() => {
+                writeln!(f, "User cancelled his action while editting run file")
+            }
             RunFileError::Save(se) => fmt::Display::fmt(se, f),
             RunFileError::Parse(ce) => fmt::Display::fmt(ce, f),
             RunFileError::IO(msg) => fmt::Display::fmt(msg, f),
@@ -437,6 +467,7 @@ impl<'a> fmt::Display for Error<'a> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Error::UserInput(msg) => writeln!(f, "{msg}"),
+            Error::UserCancel() => writeln!(f, "User cancelled his action"),
             Error::VarError(ve) => fmt::Display::fmt(ve, f),
             Error::Dialog(de) => fmt::Display::fmt(de, f),
             Error::IO(ioe) => fmt::Display::fmt(ioe, f),
@@ -476,7 +507,6 @@ impl<'a> UserKeybinding<'_> {
 // Note: can't use $HOME as is
 /// Returns "$HOME/.config/.speedrun_splits" expanded
 fn default_config_path<'a>() -> Result<String, SSConfigurationFileError<'a>> {
-    //let home = match std::env::var("HOME") {
     // NOTE: using std::env::var(HOME) with sudo gives root which is bad.
     // `su <sudoer USER>` works with desired user but you also give root access
     // which is also bad.
@@ -584,20 +614,32 @@ impl SpeedrunSettings {
 }
 
 /// Parse configuration file at default path and ask user if not present
-pub fn parse_configuration<'a>() -> Result<SpeedrunSplitsConfiguration, SSConfigurationFileError<'a>>
-{
+///
+/// Accept and skip dialog if `accept_automatically_configuration_creation` is
+/// `true`.
+pub fn parse_configuration<'a>(
+    accept_automatically_configuration_creation: bool,
+) -> Result<SpeedrunSplitsConfiguration, SSConfigurationFileError<'a>> {
     let default_config_path = default_config_path()?;
     let default_data_folder = default_data_folder()?;
     if !Path::new(default_config_path.as_str()).exists() {
-        let choice = dialog::Question::new(format!("No configuration file was found at \"{default_config_path}\". Create configuration file?").as_str())
-    .title("Create configuration file?")
-    .show()?;
-        if choice == dialog::Choice::Yes {
+        if accept_automatically_configuration_creation {
             let config = SpeedrunSplitsConfiguration::new()?;
             match save_config_to_file(&config) {
                 Ok(()) => return Ok(config),
                 Err(e) => return Err(e),
             };
+        } else {
+            let choice = dialog::Question::new(format!("No configuration file was found at \"{default_config_path}\". Create configuration file?").as_str())
+    .title("Create configuration file?")
+    .show()?;
+            if choice == dialog::Choice::Yes {
+                let config = SpeedrunSplitsConfiguration::new()?;
+                match save_config_to_file(&config) {
+                    Ok(()) => return Ok(config),
+                    Err(e) => return Err(e),
+                };
+            }
         }
     }
 
@@ -621,7 +663,8 @@ pub fn parse_configuration<'a>() -> Result<SpeedrunSplitsConfiguration, SSConfig
     Ok(config)
 }
 
-/// Load speedrun from file and return true if newly created
+/// Load speedrun from file and return true if newly created. If provided, returns filepath of
+/// icons
 ///
 /// Use user provided `game_name` and `category_name` if present. Otherwise,
 /// fall back to default speedrun
@@ -631,53 +674,63 @@ pub fn load_speedrun_settings<'a>(
     category_name: Option<&str>,
     split_names: Option<&str>,
     user_keybinding: UserKeybinding,
-) -> (
-    Result<SpeedrunSettings, SpeedrunSettingsFileError<'a>>,
-    bool,
-) {
-    if let Some(game_name) = game_name {
-        if let Some(category_name) = category_name {
-            let settings = SpeedrunSettings {
-                game_name: game_name.to_string(),
-                category_name: category_name.to_string(),
-                split_names: vec![],
-                keybindings: Keybinding {
-                    split_key: KeyCode::Numpad1,
-                    reset_key: KeyCode::Numpad3,
-                    pause_key: KeyCode::Numpad5,
-                    unpause_key: KeyCode::Numpad7,
-                    comparison_key: KeyCode::Numpad9,
-                },
-            };
-            return (
-                find_speedrun_by_name(settings.get_file_name(), configuration),
-                false,
-            );
+    icons: Option<Values>,
+    force_speedrun_settings_creation: bool,
+) -> Result<(SpeedrunSettings, Option<Vec<String>>, bool), SpeedrunSettingsFileError<'a>> {
+    if !force_speedrun_settings_creation {
+        // look for speedrun file using `game_name` and `category_name`
+        if let Some(game_name) = game_name {
+            if let Some(category_name) = category_name {
+                let settings = SpeedrunSettings {
+                    game_name: game_name.to_string(),
+                    category_name: category_name.to_string(),
+                    split_names: vec![],
+                    keybindings: Keybinding {
+                        split_key: KeyCode::Numpad1,
+                        reset_key: KeyCode::Numpad3,
+                        pause_key: KeyCode::Numpad5,
+                        unpause_key: KeyCode::Numpad7,
+                        comparison_key: KeyCode::Numpad9,
+                    },
+                };
+                return Ok((
+                    find_speedrun_by_name(settings.get_file_name(), configuration)?,
+                    None,
+                    false,
+                ));
+            }
         }
     }
 
-    if configuration.use_default_speedrun {
+    if !force_speedrun_settings_creation && configuration.use_default_speedrun {
         info!("Loading default speedrun");
         match configuration.default_speedrun_name.clone() {
-            Some(n) => (find_speedrun_by_name(n, configuration), false),
+            Some(n) => Ok((find_speedrun_by_name(n, configuration)?, None, false)),
             None => {
                 warn!("No default speedrun name was set. Have you set a default_speedrun_name entry in your configuration file?");
-                (
-                    ask_speedrun_settings_to_user(
-                        game_name,
-                        category_name,
-                        split_names,
-                        user_keybinding,
-                    ),
-                    true,
-                )
+                match ask_speedrun_settings_to_user(
+                    game_name,
+                    category_name,
+                    split_names,
+                    user_keybinding,
+                    icons,
+                ) {
+                    Ok((ss, names)) => Ok((ss, Some(names), true)),
+                    Err(e) => Err(e),
+                }
             }
         }
     } else {
-        (
-            ask_speedrun_settings_to_user(game_name, category_name, split_names, user_keybinding),
-            true,
-        )
+        match ask_speedrun_settings_to_user(
+            game_name,
+            category_name,
+            split_names,
+            user_keybinding,
+            icons,
+        ) {
+            Ok((ss, names)) => Ok((ss, Some(names), true)),
+            Err(e) => Err(e),
+        }
     }
 }
 
@@ -728,15 +781,9 @@ fn get_user_output<'a>(input: &mut Input) -> Result<String, Error<'a>> {
         Ok(i) => match i {
             Some(i) => Ok(i),
             // NOTE: either cancel option was chosen or dialog was closed
-            None => {
-                // TODO return error with type UserCancel and exit elsewhere
-                info!("User stopped filling speedrun settings.");
-                std::process::exit(0);
-            }
+            None => Err(Error::UserCancel()),
         },
-        Err(e) => {
-            return Err(Error::Dialog(e));
-        }
+        Err(e) => Err(Error::Dialog(e)),
     }
 }
 
@@ -746,7 +793,8 @@ fn ask_speedrun_settings_to_user<'a>(
     category_name: Option<&str>,
     split_names: Option<&str>,
     keybinding: UserKeybinding,
-) -> Result<SpeedrunSettings, SpeedrunSettingsFileError<'a>> {
+    icons: Option<Values>,
+) -> Result<(SpeedrunSettings, Vec<String>), SpeedrunSettingsFileError<'a>> {
     // Continuously ask for non-empty game name
     let mut game_name: String = game_name.unwrap_or_default().to_string();
     while game_name.is_empty() {
@@ -771,6 +819,24 @@ fn ask_speedrun_settings_to_user<'a>(
             "Please provide at least one split, each separated with '|' (for instance 'split1|split 2|split 3'):",
         ).title("Enter split names"))?;
         split_names = get_splits(sn);
+    }
+
+    let mut icon_filepaths: Vec<String> = vec![];
+    if let Some(icons) = icons {
+        for icon in icons {
+            icon_filepaths.push(icon.to_string());
+        }
+    }
+    if icon_filepaths.is_empty() {
+        let choice = dialog::Question::new("Do you want to select icon images for splits?")
+            .title("Add split icon images?")
+            .show()?;
+        if choice == dialog::Choice::Yes {
+            for name in split_names.clone() {
+                let i = ask_for_icons(&name)?;
+                icon_filepaths.push(i)
+            }
+        }
     }
 
     loop {
@@ -800,7 +866,8 @@ fn ask_speedrun_settings_to_user<'a>(
         if keys.iter().all_unique() {
             let keybinding =
                 Keybinding::new(split_key, reset_key, pause_key, unpause_key, comparison_key);
-            return SpeedrunSettings::new(split_names, game_name, category_name, keybinding);
+            let ss = SpeedrunSettings::new(split_names, game_name, category_name, keybinding)?;
+            return Ok((ss, icon_filepaths));
         } else {
             warn!("No two keybinds can be the same. Retrying...")
         }
@@ -814,7 +881,11 @@ fn ask_user_keybinding<'a>(
 ) -> Result<KeyCode, Error<'a>> {
     let description = format!("Please provide the {key_name} key (example: \"{example_keybind}\", all possible values https://github.com/obv-mikhail/InputBot/blob/develop/src/public.rs):");
     let title = format!("Provide {key_name} key");
-    let k = get_user_output(Input::new(description).title(title))?;
+    let k = get_user_output(
+        Input::new(description)
+            .title(title)
+            .default(example_keybind),
+    )?;
     let k = parse_key(k)?;
     Ok(k)
 }
@@ -832,19 +903,28 @@ fn get_splits(raw_splits: String) -> Vec<String> {
 pub fn update_configuration_with_default_speedrun(
     configuration: SpeedrunSplitsConfiguration,
     settings: &SpeedrunSettings,
+    auto_accept: bool,
 ) -> Result<(), SSConfigurationFileError> {
     let game_name = settings.game_name.as_str();
     let category_name = settings.category_name.as_str();
-    let choice = dialog::Question::new(format!("Make \"{game_name}: {category_name}\" default?"))
-        .title("Make speedrun default?")
-        .show()?;
-    if choice == dialog::Choice::Yes {
+    if auto_accept {
         let mut config = configuration;
         config.use_default_speedrun = true;
         config.default_speedrun_name = Some(settings.get_file_name());
         save_config_to_file(&config)
     } else {
-        Ok(())
+        let choice =
+            dialog::Question::new(format!("Make \"{game_name}: {category_name}\" default?"))
+                .title("Make speedrun default?")
+                .show()?;
+        if choice == dialog::Choice::Yes {
+            let mut config = configuration;
+            config.use_default_speedrun = true;
+            config.default_speedrun_name = Some(settings.get_file_name());
+            save_config_to_file(&config)
+        } else {
+            Ok(())
+        }
     }
 }
 
@@ -909,4 +989,18 @@ pub fn parse_run_from_file(settings: &SpeedrunSettings) -> Result<Run, RunFileEr
     // Get out the Run object.
     let run = parsed.run;
     Ok(run)
+}
+
+/// Ask user for icon
+fn ask_for_icons<'a>(icon_name: &str) -> Result<String, SpeedrunSettingsFileError<'a>> {
+    let img_filepath = dialog::FileSelection::new("")
+        .title(format!("Select \"{icon_name}\" icon file"))
+        .show()?;
+
+    match img_filepath {
+        Some(f) => Ok(f),
+        None => Err(SpeedrunSettingsFileError::UserInput(
+            "No filepath was provided".to_string(),
+        )),
+    }
 }

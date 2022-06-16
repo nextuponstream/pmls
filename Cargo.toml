@@ -16,3 +16,5 @@ dialog = "0.3.0"
 walkdir = "2"
 clap = { version = "3.1.18", features = ["cargo"] }
 itertools = "0.10.3"
+egui_extras = { version = "0.18.0", features = ["image"] }
+image = { version = "0.24", features = ["jpeg", "png"] }
