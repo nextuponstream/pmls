@@ -1709,6 +1709,24 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1df8c4ec4b0627e53bdf214615ad287367e482558cf84b109250b37464dc03ae"
 
 [[package]]
+name = "pmls"
+version = "0.1.0"
+dependencies = [
+ "clap",
+ "dialog",
+ "eframe",
+ "egui_extras",
+ "image 0.24.2",
+ "itertools",
+ "livesplit-core",
+ "log",
+ "serde",
+ "simplelog",
+ "toml",
+ "walkdir",
+]
+
+[[package]]
 name = "png"
 version = "0.16.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2006,24 +2024,6 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn",
-]
-
-[[package]]
-name = "speedrun_splits"
-version = "0.1.0"
-dependencies = [
- "clap",
- "dialog",
- "eframe",
- "egui_extras",
- "image 0.24.2",
- "itertools",
- "livesplit-core",
- "log",
- "serde",
- "simplelog",
- "toml",
- "walkdir",
 ]
 
 [[package]]

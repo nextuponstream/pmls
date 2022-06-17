@@ -1,4 +1,14 @@
-# Speedrun splits
+# Poor man's livesplit
+
+pmls is an application that lets you time your speedruns.
+
+**IMPORTANT NOTICE**: This crate is is not meant to replace the official
+livesplit client that might come to linux once finished. Official desktop MVP
+state is detailed
+[here](https://github.com/LiveSplit/livesplit-core/projects/2).
+
+pmls allows you to be in game and use your keyboard to time your speedruns
+using the livesplit_core library.
 
 ## Prerequisites
 
@@ -7,29 +17,42 @@
 Make sure to checkout the help command, otherwise, keyboard may not be detected:
 
 ```bash
-speedrun_splits --help
+pmls --help
 ```
 
 ## Installation
 
 ```bash
 cargo build --release
-# move artifact at ./target/release/speedrun_splits to $HOME/.local/bin/ or
-# your preferred location
 ```
+
+Move artifact at `./target/release/pmls` to `$HOME/.local/bin/` or
+your preferred location.
 
 ## Example usage
 
 ### Interactive
 
+Create the app configuration, then fill speedrun settings (keybinding, split names...) as you go:
+
 ```bash
-./target/release/speedrun_splits
+pmls
 ```
 
-### Non-interactive
+### Use different speedrun
 
 ```bash
-./target/release/speedrun_splits \
+pmls --game Hades --category "clean file"
+```
+
+**Note**: add `--force-speedrun-settings-creation` if settings file is missing.
+
+### Non-interactive quickstart
+
+If you have not created any configuration files, you can skip all dialogs with:
+
+```bash
+pmls \
 --accept-automatically-configuration-creation \
 --game Hades \
 --category "clean file" \
@@ -44,9 +67,9 @@ cargo build --release
 --make-speedrun-default
 ```
 
-## Remove configuration file
+## Remove configuration files
 
 ```bash
-rm -r $HOME/.config/.speedrun_splits
-rm -r $HOME/.speedrun_splits        
+rm $HOME/.config/.pmls
+rm -r $HOME/.pmls
 ```
