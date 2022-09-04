@@ -2,6 +2,8 @@
 
 pmls is an application that lets you time your speedruns.
 
+![ezgif com-gif-maker(27)](https://user-images.githubusercontent.com/78037645/188317798-071a0e53-bb1e-43a5-aa3c-9ddfba8f42b6.gif)
+
 **IMPORTANT NOTICE**: This crate is is not meant to replace the official
 livesplit client that might come to linux once finished. Official desktop MVP
 state is detailed
