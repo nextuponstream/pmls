@@ -41,7 +41,7 @@ to \"input\" group (group owner of eventXXX (`ls -la /dev/input/`))
     let cmd = Command::new(crate_name!())
         .author(crate_authors!())
         .version(crate_version!())
-        .about("Splitlive for linux")
+        .about("Poor man's splitlive for linux")
         .arg(
             Arg::new("game")
                 .requires("category")
